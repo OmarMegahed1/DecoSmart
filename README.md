@@ -1,7 +1,5 @@
 # Decor AI Monorepo (Backend + Mobile)
 
-The root Next.js web app has been removed.
-
 This repo now contains:
 
 - `backend/` — Express + TypeScript API
