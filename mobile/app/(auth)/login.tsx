@@ -11,19 +11,24 @@ import {
 } from "react-native";
 import { Image } from "expo-image";
 import { useState } from "react";
-import { authClient } from "../../lib/auth-client";
-import { useRouter } from "expo-router";
+import { authClient, getSessionStoreSnapshot } from "../../lib/auth-client";
+import { useRouter, useLocalSearchParams } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 
 export default function LoginScreen() {
+  const { refetch: refetchSession } = authClient.useSession();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [dismissPasswordResetBanner, setDismissPasswordResetBanner] = useState(false);
 
   const router = useRouter();
+  const { passwordReset } = useLocalSearchParams<{ passwordReset?: string }>();
+  const showPasswordResetOk =
+    passwordReset === "1" && !dismissPasswordResetBanner;
 
   const handleSubmit = async () => {
     setLoading(true);
@@ -33,8 +38,19 @@ export default function LoginScreen() {
       const { error: signInError } = await authClient.signIn.email({
         email,
         password,
+        rememberMe: remember,
       });
       if (signInError) throw new Error(signInError.message || "Failed to sign in");
+
+      // `getSession()` does not update the nanostore `useSession` reads; refetch does.
+      await refetchSession();
+      const snap = getSessionStoreSnapshot();
+      if (snap.error || !snap.data?.user) {
+        throw new Error(
+          snap.error?.message || "Signed in but session did not sync. Try again.",
+        );
+      }
+
       router.replace("/(tabs)");
     } catch (err: any) {
       setError(err.message);
@@ -48,7 +64,11 @@ export default function LoginScreen() {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       style={styles.screen}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        contentInsetAdjustmentBehavior="automatic"
+      >
       <View style={styles.headerRow}>
         <View style={styles.spacer} />
         <Text style={styles.brand}>Deco-Smart</Text>
@@ -72,6 +92,22 @@ export default function LoginScreen() {
         <Text style={styles.subtitle}>Sign in to continue to your smart home</Text>
       </View>
 
+      {showPasswordResetOk ? (
+        <View style={styles.successBanner}>
+          <Feather name="check-circle" size={18} color="#166534" style={styles.successIcon} />
+          <Text style={styles.successBannerText}>
+            Password updated. Sign in with your new password.
+          </Text>
+          <Pressable
+            onPress={() => setDismissPasswordResetBanner(true)}
+            hitSlop={10}
+            accessibilityLabel="Dismiss"
+          >
+            <Feather name="x" size={18} color="#166534" />
+          </Pressable>
+        </View>
+      ) : null}
+
       <View style={styles.form}>
         <Text style={styles.label}>Email Address</Text>
         <TextInput
@@ -86,7 +122,7 @@ export default function LoginScreen() {
 
         <View style={styles.passwordHeader}>
           <Text style={styles.label}>Password</Text>
-          <Pressable>
+          <Pressable onPress={() => router.push("/(auth)/forgot-password")}>
             <Text style={styles.forgot}>Forgot?</Text>
           </Pressable>
         </View>
@@ -215,6 +251,28 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontSize: 16,
     color: "#57534e",
+  },
+  successBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(22, 101, 52, 0.1)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(22, 101, 52, 0.25)",
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  successIcon: {
+    flexShrink: 0,
+  },
+  successBannerText: {
+    flex: 1,
+    color: "#166534",
+    fontSize: 14,
+    fontWeight: "600",
+    lineHeight: 20,
   },
   form: {
     marginTop: 8,

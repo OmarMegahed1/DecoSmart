@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { View, Text, Pressable, ActivityIndicator, StyleSheet, Platform, ScrollView } from "react-native";
 import { useEffect, useMemo, useState } from "react";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, formatApiErrorPayload } from "../../lib/api";
 import { Feather } from "@expo/vector-icons";
 import { API_URL } from "../../lib/auth-client";
 import { Buffer } from "buffer";
@@ -63,7 +63,7 @@ export default function ModelViewScreen() {
           }
         } else {
           const payload = await safeReadJson(res);
-          const message = payload?.error || `World request failed (${res.status})`;
+          const message = formatApiErrorPayload(payload, `World request failed (${res.status})`);
           setViewerDebugLogs((prev) => [...prev.slice(-8), `World fetch error: ${message}`]);
           setViewerLoadError(message);
         }
@@ -91,7 +91,7 @@ export default function ModelViewScreen() {
         const response = await apiFetch(`/api/worlds/${worldId}/spz/${selectedQuality}`);
         if (!response.ok) {
           const body = await safeReadJson(response);
-          throw new Error(body?.error || `SPZ fetch failed (${response.status})`);
+          throw new Error(formatApiErrorPayload(body, `SPZ fetch failed (${response.status})`));
         }
 
         const rawBuffer = await response.arrayBuffer();
@@ -172,7 +172,11 @@ export default function ModelViewScreen() {
         )}
       </View>
 
-      <ScrollView style={styles.bottomPanel} contentContainerStyle={styles.bottomContent}>
+      <ScrollView
+        style={styles.bottomPanel}
+        contentContainerStyle={styles.bottomContent}
+        contentInsetAdjustmentBehavior="automatic"
+      >
         <Text style={styles.metaLine}>Status: {world?.status ?? "unknown"}</Text>
         <Text style={styles.metaLine}>World ID: {worldId}</Text>
 

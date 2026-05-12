@@ -13,7 +13,8 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { apiFetch } from "../../lib/api";
+import { StatusBar } from "expo-status-bar";
+import { apiFetch, formatApiErrorPayload } from "../../lib/api";
 import { API_URL } from "../../lib/auth-client";
 import { Feather } from "@expo/vector-icons";
 import { Buffer } from "buffer";
@@ -56,6 +57,13 @@ type Operation = {
 type Stage = "polling" | "done" | "error";
 
 const POLL_MS = 5000;
+
+const CREAM = "#F5EFE6";
+const TEXT_MAIN = "#3A2F2A";
+const TEXT_SECONDARY = "#6b705c";
+const TEXT_MUTED = "#8B7E74";
+const BORDER_SUBTLE = "rgba(107,112,92,0.22)";
+const SURFACE_CARD = "#ffffff";
 
 export default function ResultScreen() {
   const { operationId } = useLocalSearchParams<{ operationId: string }>();
@@ -125,7 +133,7 @@ export default function ResultScreen() {
               lastStatus = attempt.status;
               try {
                 const errBody = await attempt.json();
-                const details = errBody?.error || JSON.stringify(errBody);
+                const details = formatApiErrorPayload(errBody, `Proxy failed (${attempt.status})`);
                 lastErrorDetails = `(${attempt.status}) ${details}`;
                 setViewerDebugLogs((prev) => [...prev, `Proxy ${quality} failed: ${details}`]);
               } catch {
@@ -285,7 +293,7 @@ export default function ResultScreen() {
         let details = "Unable to save project";
         try {
           const err = await res.json();
-          details = err?.error || details;
+          details = formatApiErrorPayload(err, details);
         } catch {
           // ignore parse error
         }
@@ -422,10 +430,11 @@ export default function ResultScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <StatusBar style={isFullscreen ? "light" : "dark"} />
       {!isFullscreen && (
         <View style={styles.header}>
           <Pressable onPress={() => router.replace("/(tabs)")} style={styles.backBtn}>
-            <Feather name="arrow-left" size={18} color="#f8fafc" />
+            <Feather name="arrow-left" size={18} color={TEXT_MAIN} />
           </Pressable>
           <Text style={styles.headerTitle}>AI 3D Result</Text>
           <View style={styles.backBtn} />
@@ -465,19 +474,19 @@ export default function ResultScreen() {
                   </Text>
                 </View>
                 <Pressable style={styles.fullscreenBtn} onPress={() => setIsFullscreen((v) => !v)}>
-                  <Feather name={isFullscreen ? "minimize-2" : "maximize-2"} size={16} color="#fff" />
+                  <Feather name={isFullscreen ? "minimize-2" : "maximize-2"} size={16} color={TEXT_MAIN} />
                 </Pressable>
               </View>
             </View>
           ) : viewerLoadError ? (
             <View style={styles.previewBanner}>
-              <Feather name="alert-triangle" size={28} color="#fca5a5" />
+              <Feather name="alert-triangle" size={28} color="#dc2626" />
               <Text style={styles.previewTitle}>Viewer asset failed to load</Text>
               <Text style={styles.previewSubtitle}>{viewerLoadError}</Text>
             </View>
           ) : (
             <View style={styles.previewBanner}>
-              <Feather name="box" size={28} color="#cbd5e1" />
+              <Feather name="box" size={28} color={TEXT_MUTED} />
               <Text style={styles.previewTitle}>Preparing 3D Asset…</Text>
               <Text style={styles.previewSubtitle}>
                 {spzUrl
@@ -488,7 +497,11 @@ export default function ResultScreen() {
           )}
 
           {!isFullscreen && (
-          <ScrollView style={styles.bottomPanel} contentContainerStyle={styles.bottomPanelContent}>
+          <ScrollView
+            style={styles.bottomPanel}
+            contentContainerStyle={styles.bottomPanelContent}
+            contentInsetAdjustmentBehavior="automatic"
+          >
             <Text style={styles.statusLabel}>Status: {world.status ?? "done"}</Text>
             {!!world.assets?.caption && <Text style={styles.caption}>{world.assets.caption}</Text>}
 
@@ -585,7 +598,7 @@ export default function ResultScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#020617",
+    backgroundColor: CREAM,
   },
   header: {
     height: 56,
@@ -594,7 +607,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     borderBottomWidth: 1,
-    borderBottomColor: "#1e293b",
+    borderBottomColor: BORDER_SUBTLE,
+    backgroundColor: CREAM,
   },
   backBtn: {
     width: 32,
@@ -603,7 +617,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   headerTitle: {
-    color: "#f8fafc",
+    color: TEXT_MAIN,
     fontSize: 16,
     fontWeight: "700",
   },
@@ -613,38 +627,40 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 24,
     gap: 10,
+    backgroundColor: CREAM,
   },
   pollTitle: {
-    color: "#f8fafc",
+    color: TEXT_MAIN,
     fontSize: 18,
     fontWeight: "700",
     textAlign: "center",
   },
   pollSubtitle: {
-    color: "#94a3b8",
+    color: TEXT_SECONDARY,
     fontSize: 14,
     textAlign: "center",
   },
   operationText: {
     marginTop: 8,
-    color: "#64748b",
+    color: TEXT_MUTED,
     fontSize: 12,
   },
   errorTitle: {
-    color: "#f87171",
+    color: "#b91c1c",
     fontSize: 18,
     fontWeight: "700",
   },
   errorSubtitle: {
-    color: "#cbd5e1",
+    color: TEXT_SECONDARY,
     textAlign: "center",
     fontSize: 14,
   },
   viewerContainer: {
     flex: 1,
+    backgroundColor: CREAM,
   },
   viewerContainerFullscreen: {
-    backgroundColor: "#000",
+    backgroundColor: "#0c0a09",
   },
   embeddedViewerWrap: {
     flex: 1,
@@ -652,8 +668,8 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#334155",
-    backgroundColor: "#020617",
+    borderColor: BORDER_SUBTLE,
+    backgroundColor: CREAM,
     minHeight: 320,
   },
   embeddedViewerWrapFullscreen: {
@@ -661,16 +677,17 @@ const styles = StyleSheet.create({
     borderRadius: 0,
     borderWidth: 0,
     minHeight: 0,
+    backgroundColor: "#0c0a09",
   },
   embeddedViewer: {
     flex: 1,
-    backgroundColor: "#020617",
+    backgroundColor: CREAM,
   },
   webIframe: {
     width: "100%",
     height: "100%",
     borderWidth: 0,
-    backgroundColor: "#020617",
+    backgroundColor: CREAM,
   },
   viewerOverlayControls: {
     position: "absolute",
@@ -682,15 +699,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   viewerBadge: {
-    backgroundColor: "rgba(15,23,42,0.75)",
-    borderColor: "rgba(148,163,184,0.5)",
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderColor: BORDER_SUBTLE,
     borderWidth: 1,
     borderRadius: 999,
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
   viewerBadgeText: {
-    color: "#e2e8f0",
+    color: TEXT_MAIN,
     fontSize: 11,
     fontWeight: "600",
   },
@@ -700,8 +717,8 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(15,23,42,0.75)",
-    borderColor: "rgba(148,163,184,0.5)",
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderColor: BORDER_SUBTLE,
     borderWidth: 1,
   },
   webviewLoading: {
@@ -709,38 +726,38 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    backgroundColor: "#020617",
+    backgroundColor: CREAM,
   },
   webviewLoadingText: {
-    color: "#94a3b8",
+    color: TEXT_SECONDARY,
     fontSize: 13,
   },
   previewBanner: {
     margin: 16,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#334155",
-    backgroundColor: "#111827",
+    borderColor: BORDER_SUBTLE,
+    backgroundColor: SURFACE_CARD,
     paddingHorizontal: 16,
     paddingVertical: 22,
     alignItems: "center",
     gap: 8,
   },
   previewTitle: {
-    color: "#f8fafc",
+    color: TEXT_MAIN,
     fontSize: 18,
     fontWeight: "700",
   },
   previewSubtitle: {
-    color: "#94a3b8",
+    color: TEXT_SECONDARY,
     fontSize: 13,
     textAlign: "center",
   },
   bottomPanel: {
     maxHeight: 320,
     borderTopWidth: 1,
-    borderTopColor: "#1e293b",
-    backgroundColor: "#0f172a",
+    borderTopColor: BORDER_SUBTLE,
+    backgroundColor: SURFACE_CARD,
   },
   bottomPanelContent: {
     paddingHorizontal: 16,
@@ -748,12 +765,12 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   statusLabel: {
-    color: "#f8fafc",
+    color: TEXT_MAIN,
     fontSize: 14,
     fontWeight: "600",
   },
   caption: {
-    color: "#94a3b8",
+    color: TEXT_SECONDARY,
     fontSize: 13,
   },
   qualityRow: {
@@ -764,13 +781,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "#1e293b",
+    backgroundColor: CREAM,
+    borderWidth: 1,
+    borderColor: BORDER_SUBTLE,
   },
   qualityChipSelected: {
     backgroundColor: "#c46b4a",
+    borderColor: "#c46b4a",
   },
   qualityText: {
-    color: "#cbd5e1",
+    color: TEXT_SECONDARY,
     fontSize: 12,
     fontWeight: "600",
   },
@@ -778,46 +798,46 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
   spzUrl: {
-    color: "#94a3b8",
+    color: TEXT_MUTED,
     fontSize: 12,
   },
   debugPanel: {
     marginTop: 6,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#334155",
-    backgroundColor: "#020617",
+    borderColor: BORDER_SUBTLE,
+    backgroundColor: CREAM,
     paddingHorizontal: 10,
     paddingVertical: 10,
     gap: 4,
   },
   debugTitle: {
-    color: "#f8fafc",
+    color: TEXT_MAIN,
     fontSize: 12,
     fontWeight: "700",
   },
   debugLine: {
-    color: "#cbd5e1",
+    color: TEXT_SECONDARY,
     fontSize: 11,
   },
   debugError: {
-    color: "#fca5a5",
+    color: "#b91c1c",
     fontSize: 11,
   },
   debugLogLine: {
-    color: "#94a3b8",
+    color: TEXT_MUTED,
     fontSize: 10,
   },
   secondaryBtn: {
     alignSelf: "flex-start",
     marginTop: 6,
-    backgroundColor: "#1e293b",
+    backgroundColor: "#eae3d6",
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
   secondaryBtnText: {
-    color: "#f8fafc",
+    color: TEXT_MAIN,
     fontSize: 13,
     fontWeight: "600",
   },
@@ -841,7 +861,7 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(2, 6, 23, 0.72)",
+    backgroundColor: "rgba(58, 47, 42, 0.35)",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 20,
@@ -849,30 +869,30 @@ const styles = StyleSheet.create({
   modalCard: {
     width: "100%",
     maxWidth: 420,
-    backgroundColor: "#0f172a",
+    backgroundColor: SURFACE_CARD,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: BORDER_SUBTLE,
     borderRadius: 14,
     padding: 16,
     gap: 10,
   },
   modalTitle: {
-    color: "#f8fafc",
+    color: TEXT_MAIN,
     fontSize: 18,
     fontWeight: "700",
   },
   modalSubtitle: {
-    color: "#94a3b8",
+    color: TEXT_SECONDARY,
     fontSize: 13,
   },
   modalInput: {
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: BORDER_SUBTLE,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    color: "#f8fafc",
-    backgroundColor: "#020617",
+    color: TEXT_MAIN,
+    backgroundColor: CREAM,
   },
   modalActions: {
     flexDirection: "row",
@@ -884,10 +904,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: "#1e293b",
+    backgroundColor: "#eae3d6",
   },
   modalCancelText: {
-    color: "#cbd5e1",
+    color: TEXT_MAIN,
     fontWeight: "600",
   },
   modalSaveBtn: {
@@ -901,7 +921,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   modalStatusText: {
-    color: "#cbd5e1",
+    color: TEXT_SECONDARY,
     fontSize: 12,
   },
 });

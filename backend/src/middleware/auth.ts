@@ -14,7 +14,7 @@ export interface AuthenticatedRequest extends Request {
 }
 
 /**
- * Express middleware that validates the session from the Better Auth cookie.
+ * Express middleware that validates the Better Auth session (Cookie header from web or native).
  * Attaches req.user and req.authSession on success.
  */
 export async function requireAuth(

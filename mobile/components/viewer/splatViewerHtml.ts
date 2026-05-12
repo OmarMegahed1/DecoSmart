@@ -7,17 +7,17 @@ export function buildSplatViewerHtml(spzUrl: string) {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <style>
-      html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #020617; }
+      html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #F5EFE6; }
       #hud {
         position: fixed; top: 10px; left: 10px; z-index: 10;
-        color: #e2e8f0; font: 12px system-ui, sans-serif;
-        background: rgba(15,23,42,0.72); border: 1px solid rgba(148,163,184,.4);
+        color: #3A2F2A; font: 12px system-ui, sans-serif;
+        background: rgba(255,255,255,0.92); border: 1px solid rgba(107,112,92,0.22);
         border-radius: 999px; padding: 6px 10px; pointer-events: none;
       }
       #err {
         position: fixed; inset: 0; display: none; align-items: center;
-        justify-content: center; color: #fca5a5; font: 13px system-ui, sans-serif;
-        text-align: center; padding: 24px; background: rgba(2,6,23,.9);
+        justify-content: center; color: #b91c1c; font: 13px system-ui, sans-serif;
+        text-align: center; padding: 24px; background: rgba(245,239,230,0.96);
       }
     </style>
   </head>
@@ -50,7 +50,7 @@ export function buildSplatViewerHtml(spzUrl: string) {
         emit('spark-loaded');
 
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x020617);
+        scene.background = new THREE.Color(0xf5efe6);
 
         const camera = new THREE.PerspectiveCamera(
           75, window.innerWidth / window.innerHeight, 0.01, 2000

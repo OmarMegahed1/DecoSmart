@@ -1,7 +1,5 @@
 # Decor AI Monorepo (Backend + Mobile)
 
-The root Next.js web app has been removed.
-
 This repo now contains:
 
 - `backend/` — Express + TypeScript API
@@ -26,4 +24,41 @@ npm run web
 
 ```bash
 npm run build:backend
+```
+
+Run a command only if:
+
+you’re on a different machine or new DATABASE_URL, or
+someone recreates the database from scratch.
+Then from backend/:
+
+```bash
+npm run db:ensure-room-preview
+```
+Restart the backend if it was stopped; otherwise a restart isn’t required for this change.
+
+## Full data flow
+
+```mermaid
+flowchart TD
+    Mobile["Mobile (Expo RN)"]
+    Backend["Express Backend\n(localhost / Railway)"]
+    Kaggle["Kaggle Notebook\n(Flask + pyngrok)"]
+    WorldLabs["WorldLabs API"]
+    DB["Neon Postgres"]
+
+    Mobile -->|"POST /api/cad/process\n(DXF file + area_m2)"| Backend
+    Backend -->|"POST /process\n(multipart DXF)"| Kaggle
+    Kaggle -->|"ezdxf + EasyOCR + OpenCV\n+ Canny + Realistic Vision SD"| Kaggle
+    Kaggle -->|"rooms JSON + base64 images"| Backend
+    Backend -->|"upload each room's AI image"| WorldLabs
+    WorldLabs -->|"media_asset_id per room"| Backend
+    Backend -->|"store cad_jobs + room_results"| DB
+    Backend -->|"job_id + rooms list"| Mobile
+    Mobile -->|"Room Picker screen"| Mobile
+    Mobile -->|"POST /api/generate\n(selected room media_asset_id)"| Backend
+    Backend -->|"generate world"| WorldLabs
+    WorldLabs -->|"operation_id"| Backend
+    Mobile -->|"poll /api/operations/:id"| Backend
+    Backend -->|"3D splat URLs"| Mobile
 ```

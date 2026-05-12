@@ -9,16 +9,16 @@ import {
   Alert,
   Platform,
 } from "react-native";
-import { useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "expo-router";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, readApiErrorMessage } from "../../lib/api";
 import { Feather } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 
 type RoomType = "living_room" | "bedroom" | "kitchen" | "bathroom" | "office" | "dining";
 type StyleType = "modern" | "industrial" | "minimalist";
 type PaletteType = "earth_tones" | "ocean_breeze" | "midnight_slate";
-type InputMode = "photo" | "cad_png";
+type InputMode = "photo" | "cad_dxf";
 
 type Option<T extends string> = {
   id: T;
@@ -27,9 +27,38 @@ type Option<T extends string> = {
   icon: keyof typeof Feather.glyphMap;
 };
 
+const STEP_COUNT = 5;
+
+/** Stable id for deduping when merging multi-select sessions (tap again to add more). */
+function pickerAssetKey(asset: DocumentPicker.DocumentPickerAsset): string {
+  if (asset.uri) return asset.uri;
+  return `${asset.name ?? "file"}:${asset.size ?? 0}`;
+}
+
+function StepGate({ unlocked, children }: { unlocked: boolean; children: ReactNode }) {
+  return (
+    <View style={styles.stepGate}>
+      <View style={[styles.stepGateInner, !unlocked && styles.stepGateMuted]}>{children}</View>
+      {!unlocked ? (
+        <Pressable
+          style={styles.stepLockOverlay}
+          accessibilityRole="button"
+          accessibilityHint="Completes after the previous step"
+          accessibilityLabel="Locked: finish the previous step first"
+          onPress={() =>
+            Alert.alert("Previous step required", "Complete each step in order to unlock the next one.")
+          }
+        />
+      ) : null}
+    </View>
+  );
+}
+
 export default function HomeScreen() {
-  const router = useRouter();
+  const { push } = useRouter();
   const [selectedAssets, setSelectedAssets] = useState<DocumentPicker.DocumentPickerAsset[]>([]);
+  const [selectedDxf, setSelectedDxf] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
+  const [areaMq, setAreaMq] = useState("");
   const [roomType, setRoomType] = useState<RoomType>("living_room");
   const [styleType, setStyleType] = useState<StyleType>("modern");
   const [palette, setPalette] = useState<PaletteType>("earth_tones");
@@ -40,16 +69,61 @@ export default function HomeScreen() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [lastOperationId, setLastOperationId] = useState<string | null>(null);
 
+  /** Step 2+ requires explicit choice (defaults don’t count until user taps). */
+  const [roomTypeChosen, setRoomTypeChosen] = useState(false);
+  const [styleChosen, setStyleChosen] = useState(false);
+  const [paletteChosen, setPaletteChosen] = useState(false);
+
+  const areaValid = useMemo(() => {
+    const a = parseFloat(areaMq);
+    return areaMq.trim() !== "" && !Number.isNaN(a) && a > 0;
+  }, [areaMq]);
+
+  const step1Complete =
+    inputMode === "photo" ? selectedAssets.length > 0 : selectedDxf != null && areaValid;
+
+  useEffect(() => {
+    if (!step1Complete) {
+      setRoomTypeChosen(false);
+      setStyleChosen(false);
+      setPaletteChosen(false);
+    }
+  }, [step1Complete]);
+
+  useEffect(() => {
+    if (!roomTypeChosen) {
+      setStyleChosen(false);
+      setPaletteChosen(false);
+    }
+  }, [roomTypeChosen]);
+
+  useEffect(() => {
+    if (!styleChosen) {
+      setPaletteChosen(false);
+    }
+  }, [styleChosen]);
+
+  const unlockStep2 = step1Complete;
+  const unlockStep3 = step1Complete && roomTypeChosen;
+  const unlockStep4 = step1Complete && roomTypeChosen && styleChosen;
+  const unlockStep5 = step1Complete && roomTypeChosen && styleChosen && paletteChosen;
+
+  const instructionsDone = instructions.trim().length > 0;
+
+  const milestoneDone = [step1Complete, roomTypeChosen, styleChosen, paletteChosen, instructionsDone] as const;
+
+  const completedCount = milestoneDone.filter(Boolean).length;
+  const allStepsDone = completedCount === STEP_COUNT;
+  const currentStep = allStepsDone ? STEP_COUNT : completedCount + 1;
+
+  const canSubmit =
+    step1Complete && roomTypeChosen && styleChosen && paletteChosen;
+
   const goToResult = (operationId: string) => {
-    router.push({
+    push({
       pathname: "/result/[operationId]",
       params: { operationId },
     });
-
-    // Fallback path variant for route resolution edge-cases.
-    setTimeout(() => {
-      router.push(`/result/${operationId}` as any);
-    }, 120);
   };
 
   const roomOptions: Option<RoomType>[] = useMemo(
@@ -105,17 +179,165 @@ export default function HomeScreen() {
         copyToCacheDirectory: true,
       });
 
-      if (!result.canceled && result.assets?.length) {
-        // Backend currently supports up to 4 media_asset_ids per generation request.
-        setSelectedAssets(result.assets.slice(0, 4));
-      }
+      if (result.canceled || !result.assets?.length) return;
+
+      setSelectedAssets((prev) => {
+        const max = 4;
+        if (prev.length >= max) {
+          setTimeout(
+            () =>
+              Alert.alert(
+                "Maximum 4 photos",
+                "Remove photos first if you want to choose different images.",
+              ),
+            0,
+          );
+          return prev;
+        }
+
+        const prevKeys = new Set(prev.map(pickerAssetKey));
+        const slotsLeft = max - prev.length;
+        const uniqueIncoming = result.assets.filter((a) => !prevKeys.has(pickerAssetKey(a)));
+
+        if (uniqueIncoming.length > slotsLeft) {
+          setTimeout(
+            () =>
+              Alert.alert(
+                "Photo limit",
+                `You can add ${slotsLeft} more (max ${max} total). Extra images were not added.`,
+              ),
+            0,
+          );
+        }
+
+        const seen = new Set(prev.map(pickerAssetKey));
+        const next = [...prev];
+
+        for (const asset of result.assets) {
+          if (next.length >= max) break;
+          const key = pickerAssetKey(asset);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          next.push(asset);
+        }
+
+        return next;
+      });
     } catch (e) {
       console.error(e);
       Alert.alert("Upload Error", "Failed to select photos.");
     }
   };
 
-  const activeStep = selectedAssets.length > 0 ? 4 : 3;
+  const pickDxf = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["*/*"],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+      if (!result.canceled && result.assets?.length) {
+        const asset = result.assets[0];
+        const name = (asset.name ?? "").toLowerCase();
+        if (!name.endsWith(".dxf")) {
+          Alert.alert("Wrong File Type", "Please select a .dxf AutoCAD file.");
+          return;
+        }
+        setSelectedDxf(asset);
+      }
+    } catch (e) {
+      console.error(e);
+      Alert.alert("Upload Error", "Failed to select DXF file.");
+    }
+  };
+
+  const clearPhotoUpload = useCallback(() => {
+    setSelectedAssets([]);
+  }, []);
+
+  const clearDxfUpload = useCallback(() => {
+    setSelectedDxf(null);
+    setAreaMq("");
+  }, []);
+
+  const handleCadProcess = async () => {
+    if (!canSubmit) {
+      Alert.alert(
+        "Complete all steps",
+        "Upload your DXF and total area, then choose room type, style, and color palette.",
+      );
+      return;
+    }
+    if (!selectedDxf) {
+      Alert.alert("DXF Required", "Please select an AutoCAD .dxf file.");
+      return;
+    }
+    const area = parseFloat(areaMq);
+    if (!areaMq || isNaN(area) || area <= 0) {
+      Alert.alert("Area Required", "Please enter the total apartment area in m².");
+      return;
+    }
+
+    setSubmitError(null);
+    setLoading(true);
+    setProgressText("Uploading DXF to AI pipeline...");
+
+    try {
+      const formData = new FormData();
+      if (Platform.OS === "web" && (selectedDxf as any).file) {
+        formData.append("dxf_file", (selectedDxf as any).file);
+      } else {
+        formData.append("dxf_file", {
+          uri: selectedDxf.uri,
+          name: selectedDxf.name ?? "floor-plan.dxf",
+          type: "application/octet-stream",
+        } as any);
+      }
+      formData.append("area_m2", String(area));
+      formData.append("style", styleType);
+      formData.append("palette", palette.replace(/_/g, " "));
+      formData.append("room_type", roomType);
+
+      setProgressText("Processing floor plan (this may take 1–3 minutes)...");
+
+      const cadRes = await apiFetch("/api/cad/process", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!cadRes.ok) {
+        throw new Error(await readApiErrorMessage(cadRes, "CAD processing failed"));
+      }
+
+      const cadData = await cadRes.json();
+      const jobId: string = cadData.job_id;
+      const rooms = cadData.rooms ?? [];
+
+      if (!rooms.length) {
+        throw new Error("No rooms were detected in the DXF file. Try a different floor plan.");
+      }
+
+      setLoading(false);
+      setProgressText("");
+
+      push({
+        pathname: "/room-picker/[jobId]",
+        params: {
+          jobId,
+          style: styleType,
+          palette,
+          instructions: instructions.trim(),
+        },
+      });
+    } catch (error: any) {
+      const message = error?.message || "Unable to process DXF.";
+      setSubmitError(message);
+      Alert.alert("Error", message);
+    } finally {
+      setLoading(false);
+      setProgressText("");
+    }
+  };
 
   const buildUploadFormData = (asset: DocumentPicker.DocumentPickerAsset) => {
     const formData = new FormData();
@@ -131,14 +353,7 @@ export default function HomeScreen() {
       } as any);
     }
 
-    formData.append("source_type", inputMode);
-    formData.append("enhance_cad", inputMode === "cad_png" ? "true" : "false");
-    if (inputMode === "cad_png") {
-      formData.append(
-        "enhance_prompt",
-        `Convert CAD floor plan to realistic interior concept while preserving layout. Style: ${styleType}. Palette: ${palette}.`
-      );
-    }
+    formData.append("source_type", "photo");
     return formData;
   };
 
@@ -157,12 +372,22 @@ export default function HomeScreen() {
   };
 
   const handleGenerate = async () => {
+    if (!canSubmit) {
+      Alert.alert(
+        "Complete all steps",
+        "Upload your file(s), then select room type, style, and color palette to continue.",
+      );
+      return;
+    }
+    if (inputMode === "cad_dxf") {
+      return handleCadProcess();
+    }
     if (!selectedAssets.length) {
       Alert.alert("Photo Required", "Please upload at least one room photo.");
       return;
     }
 
-  setSubmitError(null);
+    setSubmitError(null);
     setLoading(true);
     setProgressText("Uploading photos...");
 
@@ -184,14 +409,7 @@ export default function HomeScreen() {
         });
 
         if (!uploadRes.ok) {
-          let details = "Photo upload failed";
-          try {
-            const err = await uploadRes.json();
-            details = err?.error || details;
-          } catch {
-            // ignore json parse fallback
-          }
-          throw new Error(details);
+          throw new Error(await readApiErrorMessage(uploadRes, "Photo upload failed"));
         }
 
         const uploadData = await uploadRes.json();
@@ -216,26 +434,12 @@ export default function HomeScreen() {
           media_asset_ids: mediaAssetIds,
           quality: "full",
           prompt: buildPrompt(),
-          input_mode: inputMode,
-          cad_options:
-            inputMode === "cad_png"
-              ? {
-                  preserve_layout: true,
-                  style_hint: styleType,
-                }
-              : undefined,
+          input_mode: "photo",
         }),
       });
 
       if (!generateRes.ok) {
-        let details = "Failed to start generation";
-        try {
-          const err = await generateRes.json();
-          details = err?.error || details;
-        } catch {
-          // ignore json parse fallback
-        }
-        throw new Error(details);
+        throw new Error(await readApiErrorMessage(generateRes, "Failed to start generation"));
       }
 
       const generateData = await generateRes.json();
@@ -272,27 +476,49 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.progressRow}>
-          {[1, 2, 3, 4, 5].map((step) => (
-            <View
-              key={step}
-              style={[
-                styles.progressBar,
-                step <= activeStep ? styles.progressBarActive : styles.progressBarInactive,
-              ]}
-            />
-          ))}
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View
+          style={styles.progressRow}
+          accessibilityRole="progressbar"
+          accessibilityValue={{ min: 1, max: STEP_COUNT, now: currentStep }}
+          accessibilityLabel="Form steps"
+        >
+          {Array.from({ length: STEP_COUNT }, (_, i) => i + 1).map((step) => {
+            const done = allStepsDone || step < currentStep;
+            const isCurrent = !allStepsDone && step === currentStep;
+            const isUpcoming = !allStepsDone && step > currentStep;
+
+            return (
+              <View
+                key={step}
+                accessible
+                accessibilityLabel={`Step ${step} of ${STEP_COUNT}${
+                  done ? ", completed" : isCurrent ? ", current" : ", locked"
+                }`}
+                style={[
+                  styles.progressBar,
+                  done && styles.progressBarComplete,
+                  isCurrent && styles.progressBarCurrent,
+                  isUpcoming && styles.progressBarInactive,
+                ]}
+              />
+            );
+          })}
         </View>
 
         <View style={styles.section}>
           <Text style={styles.stepLabel}>STEP 1</Text>
           <Text style={styles.sectionTitle}>
-            {inputMode === "cad_png" ? "Upload CAD PNG" : "Upload Room Photo"}
+            {inputMode === "cad_dxf" ? "Upload AutoCAD File" : "Upload Room Photo"}
           </Text>
           <Text style={styles.sectionSubtitle}>
-            {inputMode === "cad_png"
-              ? "CAD mode: your PNG is enhanced with SD + ControlNet before WorldLabs 3D generation."
+            {inputMode === "cad_dxf"
+              ? "Upload a .dxf floor plan. The AI will split it into rooms and generate realistic interior previews."
               : "Our AI uses your photo to analyze spatial dimensions and lighting for best design results."}
           </Text>
 
@@ -306,45 +532,107 @@ export default function HomeScreen() {
               </Text>
             </Pressable>
             <Pressable
-              style={[styles.modeChip, inputMode === "cad_png" && styles.modeChipActive]}
-              onPress={() => setInputMode("cad_png")}
+              style={[styles.modeChip, inputMode === "cad_dxf" && styles.modeChipActive]}
+              onPress={() => setInputMode("cad_dxf")}
             >
-              <Text style={[styles.modeChipText, inputMode === "cad_png" && styles.modeChipTextActive]}>
-                CAD PNG Mode
+              <Text style={[styles.modeChipText, inputMode === "cad_dxf" && styles.modeChipTextActive]}>
+                AutoCAD (DXF)
               </Text>
             </Pressable>
           </View>
 
-          <Pressable style={styles.uploadCard} onPress={pickAssets}>
-            <View style={styles.uploadIconBubble}>
-              <Feather name={inputMode === "cad_png" ? "grid" : "camera"} size={24} color="#6b705c" />
-            </View>
-            <Text style={styles.uploadTitle}>
-              {inputMode === "cad_png" ? "Tap to upload AutoCAD PNG" : "Tap to upload or take a photo"}
-            </Text>
-            <Text style={styles.uploadHint}>
-              {inputMode === "cad_png"
-                ? "Upload up to 4 CAD PNG files for enhancement + 3D generation"
-                : "Upload up to 4 photos (JPG, PNG, Max 10MB each)"}
-            </Text>
-            <View style={styles.countPill}>
-              <Text style={styles.countText}>{selectedAssets.length}/4 photos uploaded</Text>
-            </View>
-          </Pressable>
+          {inputMode === "cad_dxf" ? (
+            <>
+              <Pressable style={styles.uploadCard} onPress={pickDxf}>
+                <View style={styles.uploadIconBubble}>
+                  <Feather name="file-text" size={24} color="#6b705c" />
+                </View>
+                <Text style={styles.uploadTitle}>
+                  {selectedDxf ? selectedDxf.name : "Tap to select AutoCAD .dxf file"}
+                </Text>
+                <Text style={styles.uploadHint}>
+                  {selectedDxf
+                    ? "File selected — tap to change"
+                    : "Select the .dxf floor plan exported from AutoCAD"}
+                </Text>
+                {selectedDxf ? (
+                  <View style={styles.countPill}>
+                    <Text style={styles.countText}>1 DXF file ready</Text>
+                  </View>
+                ) : null}
+              </Pressable>
+
+              <View style={styles.areaInputRow}>
+                <Feather name="maximize-2" size={16} color="#6b705c" style={styles.areaInputIcon} />
+                <TextInput
+                  style={styles.areaInput}
+                  placeholder="Total apartment area (m²), e.g. 120"
+                  placeholderTextColor="#94a3b8"
+                  keyboardType="numeric"
+                  value={areaMq}
+                  onChangeText={setAreaMq}
+                />
+              </View>
+
+              {selectedDxf != null || areaMq.trim() !== "" ? (
+                <Pressable
+                  style={styles.clearUploadBtn}
+                  onPress={clearDxfUpload}
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove DXF file and clear area"
+                >
+                  <Feather name="x-circle" size={18} color="#9a3412" />
+                  <Text style={styles.clearUploadText}>Cancel DXF & area</Text>
+                </Pressable>
+              ) : null}
+            </>
+          ) : (
+            <>
+            <Pressable style={styles.uploadCard} onPress={pickAssets}>
+              <View style={styles.uploadIconBubble}>
+                <Feather name="camera" size={24} color="#6b705c" />
+              </View>
+              <Text style={styles.uploadTitle}>Tap to upload or take a photo</Text>
+              <Text style={styles.uploadHint}>
+                Select up to 4 images per picker — tap again to add more (merged up to 4 total).
+              </Text>
+              <View style={styles.countPill}>
+                <Text style={styles.countText}>{selectedAssets.length}/4 photos uploaded</Text>
+              </View>
+            </Pressable>
+            {selectedAssets.length > 0 ? (
+              <Pressable
+                style={styles.clearUploadBtn}
+                onPress={clearPhotoUpload}
+                accessibilityRole="button"
+                accessibilityLabel="Remove all selected photos"
+              >
+                <Feather name="x-circle" size={18} color="#9a3412" />
+                <Text style={styles.clearUploadText}>
+                  Remove {selectedAssets.length} photo{selectedAssets.length !== 1 ? "s" : ""}
+                </Text>
+              </Pressable>
+            ) : null}
+            </>
+          )}
         </View>
 
-        <View style={styles.section}>
+        <StepGate unlocked={unlockStep2}>
+          <View style={styles.section}>
           <Text style={styles.stepLabel}>STEP 2</Text>
           <Text style={styles.sectionTitle}>Select Room Type</Text>
           <Text style={styles.sectionSubtitle}>Which space are we transforming today?</Text>
           <View style={styles.roomGrid}>
             {roomOptions.map((option) => {
-              const selected = option.id === roomType;
+              const selected = roomTypeChosen && option.id === roomType;
               return (
                 <Pressable
                   key={option.id}
                   style={[styles.roomBtn, selected && styles.roomBtnSelected]}
-                  onPress={() => setRoomType(option.id)}
+                  onPress={() => {
+                    setRoomType(option.id);
+                    setRoomTypeChosen(true);
+                  }}
                 >
                   <Feather
                     name={option.icon}
@@ -358,17 +646,22 @@ export default function HomeScreen() {
             })}
           </View>
         </View>
+        </StepGate>
 
-        <View style={styles.section}>
+        <StepGate unlocked={unlockStep3}>
+          <View style={styles.section}>
           <Text style={styles.stepLabel}>STEP 3</Text>
           <Text style={styles.sectionTitle}>Choose your Style</Text>
           {styleOptions.map((option) => {
-            const selected = option.id === styleType;
+            const selected = styleChosen && option.id === styleType;
             return (
               <Pressable
                 key={option.id}
                 style={[styles.selectCard, selected && styles.selectCardSelected]}
-                onPress={() => setStyleType(option.id)}
+                onPress={() => {
+                  setStyleType(option.id);
+                  setStyleChosen(true);
+                }}
               >
                 <View style={styles.selectCopy}>
                   <Text style={[styles.selectTitle, selected && styles.selectTitleSelected]}>
@@ -384,13 +677,15 @@ export default function HomeScreen() {
               </Pressable>
             );
           })}
-        </View>
+          </View>
+        </StepGate>
 
-        <View style={styles.section}>
+        <StepGate unlocked={unlockStep4}>
+          <View style={styles.section}>
           <Text style={styles.stepLabel}>STEP 4</Text>
           <Text style={styles.sectionTitle}>Pick a Color Palette</Text>
           {paletteOptions.map((option) => {
-            const selected = option.id === palette;
+            const selected = paletteChosen && option.id === palette;
             const colors =
               option.id === "earth_tones"
                 ? ["#8c7851", "#d4c3a3", "#f4f1ea", "#4a3f35"]
@@ -402,7 +697,10 @@ export default function HomeScreen() {
               <Pressable
                 key={option.id}
                 style={[styles.paletteCard, selected && styles.selectCardSelected]}
-                onPress={() => setPalette(option.id)}
+                onPress={() => {
+                  setPalette(option.id);
+                  setPaletteChosen(true);
+                }}
               >
                 <View style={styles.paletteHeader}>
                   <Text style={styles.paletteTitle}>{option.label}</Text>
@@ -420,9 +718,11 @@ export default function HomeScreen() {
               </Pressable>
             );
           })}
-        </View>
+          </View>
+        </StepGate>
 
-        <View style={styles.section}>
+        <StepGate unlocked={unlockStep5}>
+          <View style={styles.section}>
           <Text style={styles.stepLabel}>STEP 5</Text>
           <Text style={styles.sectionTitle}>AI Custom Instructions</Text>
           <Text style={styles.sectionSubtitle}>
@@ -437,13 +737,20 @@ export default function HomeScreen() {
             onChangeText={setInstructions}
             textAlignVertical="top"
           />
-        </View>
+          </View>
+        </StepGate>
       </ScrollView>
 
       <View style={styles.footer}>
-        <Pressable style={styles.generateBtn} onPress={handleGenerate}>
-          <Text style={styles.generateBtnText}>Generate AI Design</Text>
-          <Feather name="zap" size={14} color="#fff" />
+        <Pressable
+          style={[styles.generateBtn, !canSubmit && styles.generateBtnDisabled]}
+          disabled={!canSubmit}
+          onPress={handleGenerate}
+        >
+          <Text style={styles.generateBtnText}>
+            {inputMode === "cad_dxf" ? "Analyze Floor Plan" : "Generate AI Design"}
+          </Text>
+          <Feather name={inputMode === "cad_dxf" ? "cpu" : "zap"} size={14} color="#fff" />
         </Pressable>
 
         {submitError ? <Text style={styles.submitErrorText}>{submitError}</Text> : null}
@@ -479,19 +786,46 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 120,
   },
+  stepGate: {
+    position: "relative",
+    marginBottom: 0,
+  },
+  stepGateInner: {
+    marginBottom: 0,
+  },
+  stepGateMuted: {
+    opacity: 0.5,
+  },
+  stepLockOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(245,242,237,0.55)",
+    borderRadius: 12,
+    zIndex: 2,
+  },
   progressRow: {
     flexDirection: "row",
     justifyContent: "center",
     gap: 10,
-    paddingVertical: 18,
+    paddingVertical: 14,
+    alignItems: "center",
   },
   progressBar: {
     width: 32,
     height: 6,
     borderRadius: 999,
+    flexGrow: 0,
   },
-  progressBarActive: {
+  progressBarComplete: {
     backgroundColor: "#6b705c",
+  },
+  progressBarCurrent: {
+    backgroundColor: "#c46b4a",
+    height: 8,
+    shadowColor: "#c46b4a",
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 2,
   },
   progressBarInactive: {
     backgroundColor: "rgba(107,112,92,0.2)",
@@ -589,6 +923,24 @@ const styles = StyleSheet.create({
   countText: {
     color: "#6b705c",
     fontSize: 12,
+    fontWeight: "600",
+  },
+  clearUploadBtn: {
+    marginTop: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(154,52,18,0.35)",
+    backgroundColor: "rgba(254,243,199,0.45)",
+  },
+  clearUploadText: {
+    color: "#9a3412",
+    fontSize: 14,
     fontWeight: "600",
   },
   roomGrid: {
@@ -693,6 +1045,25 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 14,
   },
+  areaInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#fff",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  areaInputIcon: {
+    marginRight: 8,
+  },
+  areaInput: {
+    flex: 1,
+    color: "#334155",
+    fontSize: 14,
+  },
   footer: {
     position: "absolute",
     left: 0,
@@ -713,6 +1084,9 @@ const styles = StyleSheet.create({
     gap: 8,
     alignItems: "center",
     justifyContent: "center",
+  },
+  generateBtnDisabled: {
+    opacity: 0.45,
   },
   generateBtnText: {
     color: "#fff",

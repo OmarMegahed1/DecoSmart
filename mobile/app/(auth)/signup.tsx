@@ -11,11 +11,12 @@ import {
 } from "react-native";
 import { Image } from "expo-image";
 import { useState } from "react";
-import { authClient } from "../../lib/auth-client";
+import { authClient, getSessionStoreSnapshot } from "../../lib/auth-client";
 import { useRouter } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 
 export default function SignupScreen() {
+  const { refetch: refetchSession } = authClient.useSession();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -41,6 +42,15 @@ export default function SignupScreen() {
       setError("");
       const { error } = await authClient.signUp.email({ name, email, password });
       if (error) throw new Error(error.message || "Sign up failed");
+
+      await refetchSession();
+      const snap = getSessionStoreSnapshot();
+      if (snap.error || !snap.data?.user) {
+        throw new Error(
+          snap.error?.message || "Account created but session did not sync. Try signing in.",
+        );
+      }
+
       router.replace("/(tabs)");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to sign up");
@@ -54,14 +64,23 @@ export default function SignupScreen() {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       style={styles.screen}
     >
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        contentInsetAdjustmentBehavior="automatic"
+      >
         <View style={styles.topBar}>
           <Pressable onPress={() => router.back()} style={styles.topIconButton}>
             <Feather name="x" size={20} color="#3d2b1f" />
           </Pressable>
           <View style={styles.brandWrap}>
             <View style={styles.logoBadge}>
-              <Feather name="home" size={12} color="#c46b4a" />
+              <Image
+                source={require("../../assets/Logo Frame.svg")}
+                style={styles.headerLogoImage}
+                contentFit="contain"
+                contentPosition="center"
+              />
             </View>
             <Text style={styles.brandText}>Deco-Smart</Text>
           </View>
@@ -188,12 +207,18 @@ const styles = StyleSheet.create({
   logoBadge: {
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(196,107,74,0.2)",
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#fff",
+    overflow: "hidden",
+  },
+  headerLogoImage: {
+    width: 90,
+    height: 90,
+    transform: [{ translateY: 8 }],
   },
   brandText: {
     fontSize: 32,

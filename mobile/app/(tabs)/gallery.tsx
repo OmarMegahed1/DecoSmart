@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
-import { View, Text, Pressable, ActivityIndicator, RefreshControl, StyleSheet } from "react-native";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  View,
+  Text,
+  Pressable,
+  ActivityIndicator,
+  RefreshControl,
+  StyleSheet,
+  TextInput,
+  Alert,
+} from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, readApiErrorMessage } from "../../lib/api";
 import { Feather } from "@expo/vector-icons";
 
 type Project = {
@@ -11,21 +20,99 @@ type Project = {
   name: string;
   worldId?: string | null;
   status?: string | null;
+  caption?: string | null;
   createdAt?: string | null;
 };
 
-const figmaPreviewImages = [
-  "https://www.figma.com/api/mcp/asset/a10e18b8-75f6-417f-9204-211c579347ea",
-  "https://www.figma.com/api/mcp/asset/58a03e55-46de-4912-be92-e1bbce39a474",
-  "https://www.figma.com/api/mcp/asset/f5d5ae3e-4a49-4004-bc9c-3b813023c09f",
-];
+const SEARCH_DEBOUNCE_MS = 280;
+
+const shortDateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "2-digit",
+  year: "numeric",
+});
+
+function formatProjectDate(date?: string | null): string {
+  if (!date) return "Unknown";
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return "Unknown";
+  return shortDateFormatter.format(parsed);
+}
+
+type GalleryProjectCardProps = {
+  item: Project;
+  formattedDate: string;
+  onOpenWorld: (worldId: string) => void;
+  onRequestDelete: (item: Project) => void;
+};
+
+const GalleryProjectCard = memo(function GalleryProjectCard({
+  item,
+  formattedDate,
+  onOpenWorld,
+  onRequestDelete,
+}: GalleryProjectCardProps) {
+  const handleOpen = useCallback(() => {
+    if (item.worldId) onOpenWorld(item.worldId);
+  }, [item.worldId, onOpenWorld]);
+
+  const handleDeletePress = useCallback(() => {
+    onRequestDelete(item);
+  }, [item, onRequestDelete]);
+
+  return (
+    <View style={styles.card}>
+      <Pressable
+        onPress={handleOpen}
+        disabled={!item.worldId}
+        style={({ pressed }) => [
+          styles.cardPressable,
+          !item.worldId && styles.cardPressableDisabled,
+          pressed && item.worldId && styles.cardPressablePressed,
+        ]}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !item.worldId }}
+        accessibilityLabel={item.worldId ? `Open project ${item.name}` : item.name}
+      >
+        <View style={styles.cardInner}>
+          <Text style={styles.cardTitle} numberOfLines={1}>
+            {item.name}
+          </Text>
+          <Text style={styles.cardHint} numberOfLines={1}>
+            Created: {formattedDate}
+          </Text>
+        </View>
+      </Pressable>
+      <Pressable
+        style={styles.deleteBtn}
+        onPress={handleDeletePress}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete project ${item.name}`}
+      >
+        <Feather name="trash-2" size={18} color="#b45309" />
+      </Pressable>
+    </View>
+  );
+});
 
 export default function GalleryScreen() {
-  const router = useRouter();
+  const { push } = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const searchInputRef = useRef<TextInput>(null);
+
+  const openWorld = useCallback(
+    (worldId: string) => {
+      push({ pathname: "/model-view/[worldId]", params: { worldId } });
+    },
+    [push]
+  );
 
   const loadProjects = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -35,14 +122,13 @@ export default function GalleryScreen() {
     try {
       const res = await apiFetch("/api/projects");
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error || "Failed to load projects");
+        throw new Error(await readApiErrorMessage(res, "Failed to load projects"));
       }
 
       const payload = await res.json();
       setProjects((payload?.projects || []) as Project[]);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load projects");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load projects");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -53,50 +139,155 @@ export default function GalleryScreen() {
     loadProjects();
   }, [loadProjects]);
 
-  const formatDate = (date?: string | null) => {
-    if (!date) return "Unknown";
-    const parsed = new Date(date);
-    if (Number.isNaN(parsed.getTime())) return "Unknown";
-    return parsed.toLocaleDateString(undefined, {
-      month: "short",
-      day: "2-digit",
-      year: "numeric",
-    });
-  };
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setDebouncedQuery(query.trim().toLowerCase());
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(id);
+  }, [query]);
 
-  const statusMeta = (status?: string | null) => {
-    const normalized = (status || "").toLowerCase();
-    if (normalized === "done" || normalized === "completed") {
-      return {
-        label: "COMPLETED",
-        bg: "#DCFCE7",
-        color: "#166534",
-      };
+  useEffect(() => {
+    if (!searchOpen) return;
+    const frame = requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [searchOpen]);
+
+  const filteredProjects = useMemo(() => {
+    if (!debouncedQuery) return projects;
+    return projects.filter((p) => {
+      const text = `${p.name}\n${p.caption ?? ""}`.toLowerCase();
+      return text.includes(debouncedQuery);
+    });
+  }, [projects, debouncedQuery]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setQuery("");
+    setDebouncedQuery("");
+  }, []);
+
+  const requestDeleteProject = useCallback((project: Project) => {
+    Alert.alert(
+      "Delete project",
+      `Remove "${project.name}"? This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const res = await apiFetch(`/api/projects/${project.id}`, { method: "DELETE" });
+              if (!res.ok) {
+                throw new Error(await readApiErrorMessage(res, "Failed to delete project"));
+              }
+              setProjects((prev) => prev.filter((p) => p.id !== project.id));
+            } catch (e: unknown) {
+              const message = e instanceof Error ? e.message : "Failed to delete project";
+              Alert.alert("Could not delete", message);
+            }
+          },
+        },
+      ]
+    );
+  }, []);
+
+  const renderItem = useCallback(
+    ({ item }: { item: Project }) => (
+      <GalleryProjectCard
+        item={item}
+        formattedDate={formatProjectDate(item.createdAt)}
+        onOpenWorld={openWorld}
+        onRequestDelete={requestDeleteProject}
+      />
+    ),
+    [openWorld, requestDeleteProject]
+  );
+
+  const keyExtractor = useCallback((item: Project) => item.id, []);
+
+  const listEmpty = useMemo(() => {
+    if (projects.length === 0) {
+      return (
+        <View style={styles.emptyStateWrap}>
+          <Text style={styles.emptyStateTitle}>No projects yet</Text>
+          <Text style={styles.emptyStateSubtitle}>Save from result screen to see projects here.</Text>
+        </View>
+      );
     }
-    return {
-      label: "IN PROGRESS",
-      bg: "#FEF3C7",
-      color: "#92400E",
-    };
-  };
+    if (filteredProjects.length === 0 && debouncedQuery) {
+      return (
+        <View style={styles.emptyStateWrap}>
+          <Text style={styles.emptyStateTitle}>No matching projects</Text>
+          <Text style={styles.emptyStateSubtitle}>Try a different search term.</Text>
+        </View>
+      );
+    }
+    return null;
+  }, [projects.length, filteredProjects.length, debouncedQuery]);
 
   return (
     <View style={styles.screen}>
-      <View style={styles.headerWrap}>
-        <View style={styles.headerLeft}>
-          <Image
-            source={require("../../assets/Icon.svg")}
-            style={styles.logoIcon}
-            contentFit="contain"
-          />
-          <Text style={styles.heading}>MY PROJECTS</Text>
-        </View>
-        <View style={styles.headerActions}>
-          <Pressable style={styles.iconBtn}>
-            <Feather name="search" size={16} color="#3A2F2A" />
+      {searchOpen ? (
+        <View style={styles.searchHeaderRow}>
+          <Pressable
+            onPress={closeSearch}
+            style={styles.searchBackBtn}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Close search"
+          >
+            <Feather name="arrow-left" size={20} color="#3A2F2A" />
           </Pressable>
+          <TextInput
+            ref={searchInputRef}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search by name or caption"
+            placeholderTextColor="#8B7E74"
+            style={styles.searchInput}
+            accessibilityLabel="Search projects"
+            returnKeyType="search"
+            autoCorrect={false}
+            autoCapitalize="none"
+            clearButtonMode="never"
+          />
+          {query.length > 0 ? (
+            <Pressable
+              onPress={() => setQuery("")}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Clear search text"
+            >
+              <Feather name="x-circle" size={20} color="#8B7E74" />
+            </Pressable>
+          ) : null}
         </View>
-      </View>
+      ) : (
+        <View style={styles.headerWrap}>
+          <View style={styles.headerLeft}>
+            <Image
+              source={require("../../assets/Icon.svg")}
+              style={styles.logoIcon}
+              contentFit="contain"
+            />
+            <Text style={styles.heading}>MY PROJECTS</Text>
+          </View>
+          <View style={styles.headerActions}>
+            <Pressable
+              style={styles.iconBtn}
+              hitSlop={8}
+              onPress={() => setSearchOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Open project search"
+            >
+              <Feather name="search" size={16} color="#3A2F2A" />
+            </Pressable>
+          </View>
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.centeredState}>
@@ -111,56 +302,20 @@ export default function GalleryScreen() {
         </View>
       ) : (
         <FlashList
-          data={projects}
-          numColumns={1}
+          data={filteredProjects}
+          renderItem={renderItem}
+          keyExtractor={keyExtractor}
+          style={styles.listFlex}
           contentContainerStyle={styles.listContent}
+          contentInsetAdjustmentBehavior="automatic"
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => loadProjects(true)} />}
-          renderItem={({ item, index }) => {
-            const meta = statusMeta(item.status);
-            return (
-              <Pressable
-                onPress={() => {
-                  if (item.worldId) {
-                    router.push({ pathname: "/model-view/[worldId]", params: { worldId: item.worldId } });
-                  }
-                }}
-                style={styles.card}
-              >
-                <Image
-                  source={{ uri: figmaPreviewImages[index % figmaPreviewImages.length] }}
-                  style={styles.cardImage}
-                  contentFit="cover"
-                />
-                <View style={styles.cardBody}>
-                  <View style={[styles.statusPill, { backgroundColor: meta.bg }]}>
-                    <Text style={[styles.statusPillText, { color: meta.color }]}>{meta.label}</Text>
-                  </View>
-                  <Text style={styles.cardTitle} numberOfLines={1}>
-                    {item.name}
-                  </Text>
-                  <View style={styles.cardBottomRow}>
-                    <Text style={styles.cardHint} numberOfLines={1}>Created: {formatDate(item.createdAt)}</Text>
-                    <View style={styles.avatarRow}>
-                      <View style={styles.avatarBubble}><Text style={styles.avatarText}>JD</Text></View>
-                      <View style={[styles.avatarBubble, styles.avatarBubbleAccent]}><Text style={styles.avatarTextAccent}>+1</Text></View>
-                    </View>
-                  </View>
-                  <Pressable style={styles.moreBtn}><Feather name="more-vertical" size={14} color="#8b7e74" /></Pressable>
-                </View>
-              </Pressable>
-            );
-          }}
-          keyExtractor={(item) => item.id}
-          ListEmptyComponent={
-            <View style={styles.emptyStateWrap}>
-              <Text style={styles.emptyStateTitle}>No projects yet</Text>
-              <Text style={styles.emptyStateSubtitle}>Save from result screen to see projects here.</Text>
-            </View>
-          }
+          ListEmptyComponent={listEmpty}
         />
       )}
 
-      <Pressable style={styles.fab} onPress={() => router.push("/(tabs)" as any)}>
+      <Pressable style={styles.fab} onPress={() => push("/(tabs)" as any)} hitSlop={4}>
         <Feather name="plus" size={24} color="#fff" />
       </Pressable>
     </View>
@@ -174,6 +329,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
   },
+  listFlex: {
+    flex: 1,
+  },
   headerWrap: {
     marginBottom: 8,
     flexDirection: "row",
@@ -182,6 +340,32 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     borderBottomWidth: 1,
     borderBottomColor: "rgba(196,106,74,0.1)",
+  },
+  searchHeaderRow: {
+    marginBottom: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(196,106,74,0.1)",
+  },
+  searchBackBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.5)",
+  },
+  searchInput: {
+    flex: 1,
+    minHeight: 40,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.85)",
+    color: "#3A2F2A",
+    fontSize: 16,
   },
   headerLeft: {
     flexDirection: "row",
@@ -232,7 +416,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   listContent: {
-    paddingBottom: 120,
+    paddingBottom: 88,
   },
   card: {
     borderRadius: 14,
@@ -242,86 +426,48 @@ const styles = StyleSheet.create({
     backgroundColor: "#ffffff",
     marginBottom: 16,
     width: "100%",
+    position: "relative",
     shadowColor: "#000",
     shadowOpacity: 0.05,
     shadowOffset: { width: 0, height: 1 },
     shadowRadius: 2,
     elevation: 1,
   },
-  cardImage: {
-    width: "100%",
-    height: 210,
-    backgroundColor: "#DDD6CE",
+  cardPressable: {
+    paddingRight: 44,
   },
-  cardBody: {
-    padding: 16,
-    position: "relative",
+  cardPressableDisabled: {
+    opacity: 0.55,
   },
-  statusPill: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-    marginBottom: 8,
+  cardPressablePressed: {
+    opacity: 0.92,
   },
-  statusPillText: {
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.4,
+  cardInner: {
+    paddingVertical: 16,
+    paddingLeft: 16,
+    paddingRight: 8,
   },
   cardTitle: {
-    marginTop: 2,
     color: "#3A2F2A",
     fontWeight: "700",
-    fontSize: 32,
-    lineHeight: 40,
-  },
-  cardBottomRow: {
-    marginTop: 8,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    fontSize: 22,
+    lineHeight: 28,
   },
   cardHint: {
     color: "#8B7E74",
     fontSize: 14,
+    marginTop: 6,
   },
-  avatarRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  avatarBubble: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: "#E2E8F0",
-    borderWidth: 2,
-    borderColor: "#fff",
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: -6,
-  },
-  avatarBubbleAccent: {
-    backgroundColor: "#C46A4A",
-  },
-  avatarText: {
-    color: "#3A2F2A",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  avatarTextAccent: {
-    color: "#fff",
-    fontSize: 10,
-    fontWeight: "700",
-  },
-  moreBtn: {
+  deleteBtn: {
     position: "absolute",
-    top: 16,
-    right: 12,
-    width: 24,
-    height: 24,
+    top: 14,
+    right: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "rgba(180, 83, 9, 0.08)",
   },
   emptyStateWrap: {
     paddingVertical: 80,
@@ -340,7 +486,7 @@ const styles = StyleSheet.create({
   fab: {
     position: "absolute",
     right: 20,
-    bottom: 96,
+    bottom: 12,
     width: 56,
     height: 56,
     borderRadius: 28,

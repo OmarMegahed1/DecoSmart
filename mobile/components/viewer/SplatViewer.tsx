@@ -60,14 +60,19 @@ export default function SplatViewer({ spzUrl, onLog }: Props) {
   );
 }
 
+const CREAM = "#F5EFE6";
+const TEXT_MAIN = "#3A2F2A";
+const BORDER_SOFT = "rgba(107,112,92,0.22)";
+const PAD_BG = "rgba(255,255,255,0.88)";
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  webview: { flex: 1, backgroundColor: "#020617" },
+  webview: { flex: 1, backgroundColor: CREAM },
   loading: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#020617",
+    backgroundColor: CREAM,
   },
   pad: {
     position: "absolute",
@@ -85,9 +90,9 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 8,
-    backgroundColor: "rgba(15, 23, 42, 0.72)",
+    backgroundColor: PAD_BG,
     borderWidth: 1,
-    borderColor: "rgba(148,163,184,.4)",
+    borderColor: BORDER_SOFT,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -95,10 +100,10 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "rgba(15, 23, 42, 0.32)",
+    backgroundColor: "rgba(245, 239, 230, 0.95)",
   },
   padTxt: {
-    color: "#e2e8f0",
+    color: TEXT_MAIN,
     fontSize: 14,
     fontWeight: "700",
   },

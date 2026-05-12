@@ -4,7 +4,7 @@ import type {
   Operation,
   PrepareUploadResponse,
   World,
-} from "../types/worldlabs";
+} from "./worldlabs.types";
 
 function getHeaders(): Record<string, string> {
   return {

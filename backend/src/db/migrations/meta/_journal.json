@@ -8,6 +8,20 @@
       "when": 1773629642855,
       "tag": "0000_military_emma_frost",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778271687051,
+      "tag": "0001_mysterious_diamondback",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778323200000,
+      "tag": "0002_room_preview_png",
+      "breakpoints": true
     }
   ]
 }

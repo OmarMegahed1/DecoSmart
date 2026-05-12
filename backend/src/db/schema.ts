@@ -78,6 +78,45 @@ export const projects = pgTable("projects", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ─── CAD Jobs ─────────────────────────────────────────────────────────────────
+
+export const cadJobs = pgTable("cad_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  status: text("status").notNull().default("pending"), // pending | done | error
+  originalFileName: text("original_file_name"),
+  areaMqInput: integer("area_m2_input"),
+  totalRooms: integer("total_rooms").default(0),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ─── Room Results ──────────────────────────────────────────────────────────────
+
+export const roomResults = pgTable("room_results", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  cadJobId: uuid("cad_job_id")
+    .notNull()
+    .references(() => cadJobs.id, { onDelete: "cascade" }),
+  roomIndex: integer("room_index").notNull(),
+  name: text("name").notNull(),
+  type: text("type").notNull(),
+  widthM: text("width_m"),
+  depthM: text("depth_m"),
+  areaMq: text("area_m2"),
+  windows: integer("windows"),
+  doors: integer("doors"),
+  priceFinishing: integer("price_finishing"),
+  furnitureJson: jsonb("furniture_json"),
+  // WorldLabs media_asset_id for the AI-generated room preview image
+  mediaAssetId: text("media_asset_id"),
+  /** Raw PNG base64 from CAD pipeline for list thumbnails (no persistent WL URL) */
+  previewPngB64: text("preview_png_b64"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type User = typeof user.$inferSelect;
@@ -87,3 +126,7 @@ export type Project = typeof projects.$inferSelect;
 export type NewGeneration = typeof generations.$inferInsert;
 export type NewUploadedAsset = typeof uploadedAssets.$inferInsert;
 export type NewProject = typeof projects.$inferInsert;
+export type CadJob = typeof cadJobs.$inferSelect;
+export type RoomResult = typeof roomResults.$inferSelect;
+export type NewCadJob = typeof cadJobs.$inferInsert;
+export type NewRoomResult = typeof roomResults.$inferInsert;

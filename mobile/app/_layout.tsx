@@ -2,11 +2,17 @@ import { Slot, useRouter, useSegments, useRootNavigationState } from "expo-route
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef } from "react";
 import { authClient } from "../lib/auth-client";
+import { useSessionRefetchOnAppFocus } from "../lib/useSessionRefetchOnAppFocus";
 import { View, ActivityIndicator, StyleSheet } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import "../global.css";
 
+/** Matches primary screens (gallery, profile, model-view). */
+const APP_SCREEN_BACKGROUND = "#F5EFE6";
+
 export default function RootLayout() {
-  const { data: session, isPending } = authClient.useSession();
+  const { data: session, isPending, refetch } = authClient.useSession();
+  useSessionRefetchOnAppFocus(refetch);
   const segments = useSegments();
   const router = useRouter();
   const navState = useRootNavigationState();
@@ -14,9 +20,12 @@ export default function RootLayout() {
   routerRef.current = router;
 
   // Stable primitives only — avoids object/array dependency churn loops.
-  const segmentsKey = segments[0] ?? "";
+  const routeGroup = segments[0];
   const sessionId = session?.user?.id ?? null;
-  const inAuthGroup = segmentsKey === "(auth)";
+  /** Only "(auth)" counts as the auth stack; missing `segments[0]` happens briefly during transitions. */
+  const inAuthGroup = routeGroup === "(auth)";
+  /** Known route group outside (auth), e.g. "(tabs)", "room-picker" — not the in-between navigation state. */
+  const outsideAuthGroup = routeGroup != null && routeGroup !== "(auth)";
   const navReady = !!navState?.key;
 
   useEffect(() => {
@@ -26,7 +35,7 @@ export default function RootLayout() {
     const target =
       sessionId && inAuthGroup
         ? "/(tabs)"
-        : !sessionId && !inAuthGroup
+        : !sessionId && outsideAuthGroup
         ? "/(auth)/login"
         : null;
 
@@ -38,23 +47,30 @@ export default function RootLayout() {
     }, delay);
 
     return () => clearTimeout(timer);
-  }, [navReady, isPending, sessionId, segmentsKey, inAuthGroup]);
+  }, [navReady, isPending, sessionId, routeGroup, inAuthGroup, outsideAuthGroup]);
 
-  const showSpinner = !navReady || isPending || (!sessionId && !inAuthGroup) || (!!sessionId && inAuthGroup);
+  const showSpinner =
+    !navReady ||
+    isPending ||
+    (!sessionId && outsideAuthGroup) ||
+    (!!sessionId && inAuthGroup);
 
   if (showSpinner) {
     return (
-      <View className="flex-1 items-center justify-center bg-gray-900" style={styles.loadingRoot}>
-        <ActivityIndicator size="large" color="#ffffff" />
-      </View>
+      <SafeAreaProvider>
+        <StatusBar style="dark" />
+        <View style={styles.loadingRoot}>
+          <ActivityIndicator size="large" color="#c46b4a" />
+        </View>
+      </SafeAreaProvider>
     );
   }
 
   return (
-    <>
-      <StatusBar style="light" />
+    <SafeAreaProvider>
+      <StatusBar style="dark" />
       <Slot />
-    </>
+    </SafeAreaProvider>
   );
 }
 
@@ -63,6 +79,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#111827",
+    backgroundColor: APP_SCREEN_BACKGROUND,
   },
 });
