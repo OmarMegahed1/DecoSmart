@@ -617,6 +617,8 @@ flowchart TB
 
 ### Sequence — CAD → room → world → SPZ (detail)
 
+Accurate to **`processCadDxfJob`**, **`createWorldGeneration`**, **`getOperationWithGenerationSync`**, and **`proxyWorldSpzAsset`**. The **poll** loop always calls Marble; **Postgres** is updated only when the operation is **finished successfully** or has an **error** (not on every poll).
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -628,35 +630,42 @@ sequenceDiagram
   participant DB as Postgres
 
   U->>App: Pick .dxf + options
-  App->>API: POST /api/cad-jobs/process — cookie session
+  App->>API: POST /api/cad-jobs/process — session cookie
+  API->>DB: insert cad_jobs — status pending
   API->>KG: multipart dxf_file + form fields
-  KG-->>API: rooms JSON + base64 images
-  loop Each room render
-    API->>WL: prepare_upload + PUT PNG
-    WL-->>API: media_asset_id
+  KG-->>API: rooms JSON + base64 images per room
+  loop Each detected room
+    API->>WL: media-assets prepare_upload + PUT PNG
+    WL-->>API: media_asset_id per room
   end
-  API->>DB: insert cad_jobs, room_results
-  API-->>App: job_id, rooms[]
+  API->>DB: transaction — insert room_results + set cad_jobs done + total_rooms
+  API-->>App: job_id + rooms[] — 201
 
-  U->>App: Select room → Continue
-  App->>API: POST /api/generations — cad_dxf + media_asset_ids[0] + prompt
-  API->>WL: worlds:generate
+  U->>App: Select room
+  App->>API: POST /api/generations — cad_dxf + media_asset_ids + prompt
+  API->>WL: worlds generate
   WL-->>API: operation_id
-  API->>DB: insert generations, uploaded_assets
-  API-->>App: operation_id, generation_id
+  API->>DB: transaction — insert generations + uploaded_assets — pending
+  API-->>App: operation_id + generation_id — 201
 
-  loop Until done
+  loop Client polls until done or error
     App->>API: GET /api/operations/:operationId
+    API->>DB: load generations row — ownership
     API->>WL: get operation
-    WL-->>API: progress / world payload
-    API->>DB: update generations — world_id, spz_urls when complete
-    API-->>App: Marble operation JSON
+    WL-->>API: Operation JSON — progress done error
+    opt Marble done and no error and DB not yet done
+      API->>DB: update generations — world_id spz_urls status done
+    end
+    opt Marble returned error and DB not yet error
+      API->>DB: update generations — status error errorMessage
+    end
+    API-->>App: Operation JSON
   end
 
   U->>App: Open 3D viewer
-  App->>API: GET /api/worlds/:worldId/spz/full_res
-  API->>DB: resolve generation / spz_urls
-  API->>WL: fetch SPZ URL if needed
+  App->>API: GET /api/worlds/:worldId/spz/:quality — optional ?operationId=
+  API->>DB: resolveGenerationForWorld — spz_urls
+  API->>WL: fetch binary from signed SPZ URL — or getWorld if needed
   API-->>App: SPZ bytes
 ```
 
