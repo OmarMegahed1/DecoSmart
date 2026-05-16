@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { auth } from "./better-auth";
+import { HttpError } from "../lib/httpError";
 
 export interface AuthenticatedRequest extends Request {
   user: {
@@ -46,4 +47,25 @@ export async function requireAuth(
   } catch {
     res.status(401).json({ error: "Invalid or expired session" });
   }
+}
+
+/**
+ * Call at the start of handlers guarded by `router.use(requireAuth)`.
+ * If auth was omitted, throws {@link HttpError} so mis-ordered routes fail visibly instead of `req.user` being undefined.
+ */
+export function requireUser(req: Request): AuthenticatedRequest {
+  const r = req as AuthenticatedRequest;
+  if (
+    !r.user ||
+    typeof r.user.id !== "string" ||
+    !r.authSession ||
+    typeof r.authSession.token !== "string"
+  ) {
+    throw new HttpError(
+      500,
+      "Internal: route missing requireAuth before requireUser()",
+      false
+    );
+  }
+  return r;
 }

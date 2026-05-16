@@ -2,13 +2,6 @@ import type { Request, Response, NextFunction } from "express";
 import type { ZodSchema } from "zod";
 import { ZodError } from "zod";
 
-function formatZodDetails(error: ZodError) {
-  return error.issues.map((issue) => ({
-    field: issue.path.join(".") || "(root)",
-    message: issue.message,
-  }));
-}
-
 export const validateBody = (schema: ZodSchema) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     try {
@@ -18,7 +11,10 @@ export const validateBody = (schema: ZodSchema) => {
       if (error instanceof ZodError) {
         res.status(400).json({
           error: "Validation failed",
-          details: formatZodDetails(error),
+          details: error.issues.map((err) => ({
+            field: err.path.length ? err.path.join(".") : "(root)",
+            message: err.message,
+          })),
         });
         return;
       }
@@ -40,7 +36,10 @@ export const validateParams = (schema: ZodSchema) => {
       if (error instanceof ZodError) {
         res.status(400).json({
           error: "Invalid parameters",
-          details: formatZodDetails(error),
+          details: error.issues.map((err) => ({
+            field: err.path.length ? err.path.join(".") : "(root)",
+            message: err.message,
+          })),
         });
         return;
       }
@@ -58,7 +57,10 @@ export const validateQuery = (schema: ZodSchema) => {
       if (error instanceof ZodError) {
         res.status(400).json({
           error: "Invalid query parameters",
-          details: formatZodDetails(error),
+          details: error.issues.map((err) => ({
+            field: err.path.length ? err.path.join(".") : "(root)",
+            message: err.message,
+          })),
         });
         return;
       }

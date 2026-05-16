@@ -1,3 +1,9 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Web / mobile browser: stop iOS/Android Chrome from auto-inflating text on rotation or “comfort” scale */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}

@@ -59,7 +59,7 @@ export default function ForgotPasswordScreen() {
         keyboardShouldPersistTaps="handled"
         contentInsetAdjustmentBehavior="automatic"
       >
-        <Pressable style={styles.backRow} onPress={() => router.back()} hitSlop={12}>
+        <Pressable style={styles.backRow} onPress={() => router.replace("/(auth)/login")} hitSlop={12}>
           <Feather name="arrow-left" size={20} color="#3e2f28" />
           <Text style={styles.backText}>Back to sign in</Text>
         </Pressable>

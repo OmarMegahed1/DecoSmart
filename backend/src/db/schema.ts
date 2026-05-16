@@ -1,4 +1,13 @@
+/**
+ * Drizzle schema:
+ * - TypeScript keys: camelCase (`userId`, `emailVerified`, `createdAt`, …).
+ * - SQL columns: snake_case (including `user`; Better Auth maps logical fields via `user.fields` in `better-auth.ts`).
+ */
+import { relations } from "drizzle-orm";
+import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 import { pgTable, uuid, text, timestamp, integer, jsonb, pgEnum } from "drizzle-orm/pg-core";
+
+const tz = { withTimezone: true } as const;
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
@@ -10,16 +19,18 @@ export const generationStatusEnum = pgEnum("generation_status", [
   "error",
 ]);
 
-// ─── Better Auth user table (managed by Better Auth, singular name) ───────────
+export const cadJobStatusEnum = pgEnum("cad_job_status", ["pending", "done", "error"]);
+
+// ─── User (Better Auth; column names must match `user.fields` in better-auth.ts) ─
 
 export const user = pgTable("user", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
-  emailVerified: timestamp("emailVerified", { withTimezone: true }).notNull(),
+  emailVerified: timestamp("email_verified", tz).notNull(),
   image: text("image"),
-  createdAt: timestamp("createdAt", { withTimezone: true }).notNull(),
-  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", tz).notNull(),
+  updatedAt: timestamp("updated_at", tz).notNull(),
 });
 
 // ─── Generations ──────────────────────────────────────────────────────────────
@@ -41,29 +52,33 @@ export const generations = pgTable("generations", {
     full_res: string;
   }>(),
   imageCount: integer("image_count").notNull().default(0),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", tz).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", tz),
 });
 
-// ─── Uploaded Assets ──────────────────────────────────────────────────────────
+// ─── Uploaded assets ───────────────────────────────────────────────────────────
 
 export const uploadedAssets = pgTable("uploaded_assets", {
   id: uuid("id").primaryKey().defaultRandom(),
-  generationId: uuid("generation_id").references(() => generations.id, { onDelete: "cascade" }),
+  generationId: uuid("generation_id").references(() => generations.id, {
+    onDelete: "cascade",
+  }),
   mediaAssetId: text("media_asset_id").notNull(),
   originalName: text("original_name").notNull(),
   mimeType: text("mime_type").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", tz).notNull().defaultNow(),
 });
 
-// ─── Saved Projects ───────────────────────────────────────────────────────────
+// ─── Projects ───────────────────────────────────────────────────────────────────
 
 export const projects = pgTable("projects", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: text("user_id")
     .notNull()
     .references(() => user.id, { onDelete: "cascade" }),
-  generationId: uuid("generation_id").references(() => generations.id, { onDelete: "set null" }),
+  generationId: uuid("generation_id").references(() => generations.id, {
+    onDelete: "set null",
+  }),
   operationId: text("operation_id"),
   worldId: text("world_id"),
   name: text("name").notNull(),
@@ -74,26 +89,26 @@ export const projects = pgTable("projects", {
     "500k"?: string;
     full_res?: string;
   }>(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", tz).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", tz).notNull().defaultNow(),
 });
 
-// ─── CAD Jobs ─────────────────────────────────────────────────────────────────
+// ─── CAD jobs ───────────────────────────────────────────────────────────────────
 
 export const cadJobs = pgTable("cad_jobs", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: text("user_id")
     .notNull()
     .references(() => user.id, { onDelete: "cascade" }),
-  status: text("status").notNull().default("pending"), // pending | done | error
+  status: cadJobStatusEnum("status").notNull().default("pending"),
   originalFileName: text("original_file_name"),
   areaMqInput: integer("area_m2_input"),
   totalRooms: integer("total_rooms").default(0),
   errorMessage: text("error_message"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", tz).notNull().defaultNow(),
 });
 
-// ─── Room Results ──────────────────────────────────────────────────────────────
+// ─── Room results ───────────────────────────────────────────────────────────────
 
 export const roomResults = pgTable("room_results", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -110,23 +125,97 @@ export const roomResults = pgTable("room_results", {
   doors: integer("doors"),
   priceFinishing: integer("price_finishing"),
   furnitureJson: jsonb("furniture_json"),
-  // WorldLabs media_asset_id for the AI-generated room preview image
   mediaAssetId: text("media_asset_id"),
-  /** Raw PNG base64 from CAD pipeline for list thumbnails (no persistent WL URL) */
   previewPngB64: text("preview_png_b64"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", tz).notNull().defaultNow(),
 });
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Relations ────────────────────────────────────────────────────────────────
+
+export const userRelations = relations(user, ({ many }) => ({
+  generations: many(generations),
+  projects: many(projects),
+  cadJobs: many(cadJobs),
+}));
+
+export const generationsRelations = relations(generations, ({ one, many }) => ({
+  user: one(user, {
+    fields: [generations.userId],
+    references: [user.id],
+  }),
+  uploadedAssets: many(uploadedAssets),
+  projects: many(projects),
+}));
+
+export const uploadedAssetsRelations = relations(uploadedAssets, ({ one }) => ({
+  generation: one(generations, {
+    fields: [uploadedAssets.generationId],
+    references: [generations.id],
+  }),
+}));
+
+export const projectsRelations = relations(projects, ({ one }) => ({
+  user: one(user, {
+    fields: [projects.userId],
+    references: [user.id],
+  }),
+  generation: one(generations, {
+    fields: [projects.generationId],
+    references: [generations.id],
+  }),
+}));
+
+export const cadJobsRelations = relations(cadJobs, ({ one, many }) => ({
+  user: one(user, {
+    fields: [cadJobs.userId],
+    references: [user.id],
+  }),
+  roomResults: many(roomResults),
+}));
+
+export const roomResultsRelations = relations(roomResults, ({ one }) => ({
+  cadJob: one(cadJobs, {
+    fields: [roomResults.cadJobId],
+    references: [cadJobs.id],
+  }),
+}));
+
+// ─── Zod ────────────────────────────────────────────────────────────────────────
+
+export const insertUserSchema = createInsertSchema(user);
+export const selectUserSchema = createSelectSchema(user);
+
+export const insertGenerationSchema = createInsertSchema(generations);
+export const selectGenerationSchema = createSelectSchema(generations);
+
+export const insertUploadedAssetSchema = createInsertSchema(uploadedAssets);
+export const selectUploadedAssetSchema = createSelectSchema(uploadedAssets);
+
+export const insertProjectSchema = createInsertSchema(projects);
+export const selectProjectSchema = createSelectSchema(projects);
+
+export const insertCadJobSchema = createInsertSchema(cadJobs);
+export const selectCadJobSchema = createSelectSchema(cadJobs);
+
+export const insertRoomResultSchema = createInsertSchema(roomResults);
+export const selectRoomResultSchema = createSelectSchema(roomResults);
+
+// ─── Types ────────────────────────────────────────────────────────────────────────
 
 export type User = typeof user.$inferSelect;
+export type NewUser = typeof user.$inferInsert;
+
 export type Generation = typeof generations.$inferSelect;
-export type UploadedAsset = typeof uploadedAssets.$inferSelect;
-export type Project = typeof projects.$inferSelect;
 export type NewGeneration = typeof generations.$inferInsert;
+
+export type UploadedAsset = typeof uploadedAssets.$inferSelect;
 export type NewUploadedAsset = typeof uploadedAssets.$inferInsert;
+
+export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
+
 export type CadJob = typeof cadJobs.$inferSelect;
-export type RoomResult = typeof roomResults.$inferSelect;
 export type NewCadJob = typeof cadJobs.$inferInsert;
+
+export type RoomResult = typeof roomResults.$inferSelect;
 export type NewRoomResult = typeof roomResults.$inferInsert;

@@ -1,37 +1,87 @@
 import { useEffect, useState } from "react";
-import { View, Text, Pressable, TextInput, StyleSheet, ActivityIndicator, Alert, ScrollView } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  TextInput,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+} from "react-native";
 import { authClient } from "../../lib/auth-client";
 import { Feather } from "@expo/vector-icons";
+import { getEmailVerificationCallbackUrl } from "../../lib/email-verification-redirect";
 
 export default function ProfileScreen() {
-  const { data: session } = authClient.useSession();
+  const { data: session, refetch } = authClient.useSession();
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [sendingEmailChange, setSendingEmailChange] = useState(false);
+
+  const currentEmail = session?.user?.email ?? "";
 
   useEffect(() => {
     setName(session?.user?.name ?? "");
-    setEmail(session?.user?.email ?? "");
-  }, [session?.user?.name, session?.user?.email]);
+  }, [session?.user?.name]);
 
-  const onSave = async () => {
-    if (!name.trim() || !email.trim()) {
-      Alert.alert("Missing fields", "Please enter both name and email.");
+  const onSaveName = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      Alert.alert("Name required", "Please enter your name.");
       return;
     }
 
     try {
-      setSaving(true);
-      const client = authClient as any;
-      if (typeof client.updateUser === "function") {
-        const res = await client.updateUser({ name: name.trim(), email: email.trim() });
-        if (res?.error) throw new Error(res.error.message || "Failed to save profile");
+      setSavingName(true);
+      const { error } = await authClient.updateUser({ name: trimmed });
+      if (error) {
+        throw new Error(error.message || "Failed to update name");
       }
-      Alert.alert("Saved", "Your profile has been updated.");
-    } catch (e: any) {
-      Alert.alert("Update failed", e?.message || "Could not update profile.");
+      await refetch();
+      Alert.alert("Saved", "Your name has been updated.");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Could not update name.";
+      Alert.alert("Update failed", message);
     } finally {
-      setSaving(false);
+      setSavingName(false);
+    }
+  };
+
+  const onRequestEmailChange = async () => {
+    const trimmed = newEmail.trim().toLowerCase();
+    if (!trimmed) {
+      Alert.alert("Email required", "Enter the new email address.");
+      return;
+    }
+    if (trimmed === currentEmail.toLowerCase()) {
+      Alert.alert("Same email", "That is already your sign-in email.");
+      return;
+    }
+
+    try {
+      setSendingEmailChange(true);
+      const { error } = await authClient.changeEmail({
+        newEmail: trimmed,
+        callbackURL: getEmailVerificationCallbackUrl(),
+      });
+      if (error) {
+        throw new Error(error.message || "Could not start email change");
+      }
+
+      setNewEmail("");
+      Alert.alert(
+        "Check your inbox",
+        `We sent a verification link to ${trimmed}. Your sign-in email updates only after you open that link. ` +
+          `If that address is already used by another account, you will not receive a message (for privacy).`,
+      );
+      await refetch();
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Could not request email change.";
+      Alert.alert("Email change failed", message);
+    } finally {
+      setSendingEmailChange(false);
     }
   };
 
@@ -48,6 +98,8 @@ export default function ProfileScreen() {
       <Text style={styles.userName}>{session?.user?.name ?? "Designer"}</Text>
 
       <View style={styles.formCard}>
+        <Text style={styles.sectionTitle}>Display name</Text>
+        <Text style={styles.helper}>Updates as soon as you save.</Text>
         <Text style={styles.label}>Name</Text>
         <TextInput
           value={name}
@@ -56,20 +108,45 @@ export default function ProfileScreen() {
           placeholder="Your name"
           placeholderTextColor="#8B7E74"
         />
+        <Pressable style={styles.primaryBtn} onPress={onSaveName} disabled={savingName}>
+          {savingName ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.primaryBtnText}>Save name</Text>
+          )}
+        </Pressable>
+      </View>
 
-        <Text style={styles.label}>Email</Text>
+      <View style={[styles.formCard, styles.formCardSpaced]}>
+        <Text style={styles.sectionTitle}>Sign-in email</Text>
+        <Text style={styles.helper}>
+          We email a verification link to the new address. Your sign-in email only changes after you confirm.
+        </Text>
+        <Text style={styles.label}>Current</Text>
+        <View style={styles.readonlyBox}>
+          <Text style={styles.readonlyText}>{currentEmail || "—"}</Text>
+        </View>
+
+        <Text style={styles.label}>New email</Text>
         <TextInput
-          value={email}
-          onChangeText={setEmail}
+          value={newEmail}
+          onChangeText={setNewEmail}
           style={styles.input}
-          placeholder="you@example.com"
+          placeholder="future@example.com"
           placeholderTextColor="#8B7E74"
           autoCapitalize="none"
           keyboardType="email-address"
         />
-
-        <Pressable style={styles.saveBtn} onPress={onSave} disabled={saving}>
-          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>Save Changes</Text>}
+        <Pressable
+          style={styles.secondaryBtn}
+          onPress={onRequestEmailChange}
+          disabled={sendingEmailChange}
+        >
+          {sendingEmailChange ? (
+            <ActivityIndicator color="#C46A4A" />
+          ) : (
+            <Text style={styles.secondaryBtnText}>Send verification link</Text>
+          )}
         </Pressable>
       </View>
 
@@ -116,6 +193,21 @@ const styles = StyleSheet.create({
     borderColor: "rgba(196,106,74,0.12)",
     padding: 16,
   },
+  formCardSpaced: {
+    marginTop: 14,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#3A2F2A",
+    marginBottom: 6,
+  },
+  helper: {
+    fontSize: 12,
+    color: "#6B5B50",
+    lineHeight: 17,
+    marginBottom: 12,
+  },
   label: {
     color: "#3A2F2A",
     fontSize: 14,
@@ -133,16 +225,44 @@ const styles = StyleSheet.create({
     fontSize: 15,
     marginBottom: 14,
   },
-  saveBtn: {
-    marginTop: 4,
+  readonlyBox: {
+    minHeight: 52,
+    borderRadius: 12,
+    backgroundColor: "#faf7f3",
+    borderWidth: 1,
+    borderColor: "#E7DED4",
+    paddingHorizontal: 14,
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  readonlyText: {
+    color: "#3A2F2A",
+    fontSize: 15,
+  },
+  primaryBtn: {
+    marginTop: 0,
     height: 52,
     borderRadius: 12,
     backgroundColor: "#C46A4A",
     alignItems: "center",
     justifyContent: "center",
   },
-  saveBtnText: {
+  primaryBtnText: {
     color: "#fff",
+    fontWeight: "800",
+    fontSize: 16,
+  },
+  secondaryBtn: {
+    height: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(196,106,74,0.45)",
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  secondaryBtnText: {
+    color: "#C46A4A",
     fontWeight: "800",
     fontSize: 16,
   },

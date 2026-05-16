@@ -12,6 +12,8 @@ import {
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "expo-router";
 import { apiFetch, readApiErrorMessage } from "../../lib/api";
+import { maxCadInstructionCharsFromHome, maxPhotoInstructionChars } from "../../lib/worldlabsPromptLimits";
+import { setCadJobGenerationPrefs } from "../../lib/cadJobGenerationPrefs";
 import { Feather } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 
@@ -27,12 +29,36 @@ type Option<T extends string> = {
   icon: keyof typeof Feather.glyphMap;
 };
 
-const STEP_COUNT = 5;
-
 /** Stable id for deduping when merging multi-select sessions (tap again to add more). */
 function pickerAssetKey(asset: DocumentPicker.DocumentPickerAsset): string {
   if (asset.uri) return asset.uri;
   return `${asset.name ?? "file"}:${asset.size ?? 0}`;
+}
+
+/** Web `FormData` must use a `File`; native uses `{ uri, name, type }` parts. */
+async function appendMultipartFile(
+  formData: FormData,
+  fieldName: string,
+  asset: DocumentPicker.DocumentPickerAsset,
+  fallbackName: string,
+  fallbackMime: string,
+) {
+  if (Platform.OS === "web") {
+    if (asset.file) {
+      formData.append(fieldName, asset.file);
+      return;
+    }
+    const res = await fetch(asset.uri);
+    const blob = await res.blob();
+    const name = asset.name ?? fallbackName;
+    formData.append(fieldName, new File([blob], name, { type: asset.mimeType || blob.type || fallbackMime }));
+    return;
+  }
+  formData.append(fieldName, {
+    uri: asset.uri,
+    name: asset.name ?? fallbackName,
+    type: asset.mimeType || fallbackMime,
+  } as any);
 }
 
 function StepGate({ unlocked, children }: { unlocked: boolean; children: ReactNode }) {
@@ -91,11 +117,11 @@ export default function HomeScreen() {
   }, [step1Complete]);
 
   useEffect(() => {
-    if (!roomTypeChosen) {
+    if (inputMode === "photo" && !roomTypeChosen) {
       setStyleChosen(false);
       setPaletteChosen(false);
     }
-  }, [roomTypeChosen]);
+  }, [roomTypeChosen, inputMode]);
 
   useEffect(() => {
     if (!styleChosen) {
@@ -103,21 +129,44 @@ export default function HomeScreen() {
     }
   }, [styleChosen]);
 
-  const unlockStep2 = step1Complete;
-  const unlockStep3 = step1Complete && roomTypeChosen;
-  const unlockStep4 = step1Complete && roomTypeChosen && styleChosen;
-  const unlockStep5 = step1Complete && roomTypeChosen && styleChosen && paletteChosen;
+  /** Floor plans: room types come from the DXF/OCR pipeline, not this screen. */
+  const roomStepComplete = inputMode === "cad_dxf" || roomTypeChosen;
+
+  const stepCount = inputMode === "cad_dxf" ? 4 : 5;
+  const styleStepNum = inputMode === "cad_dxf" ? 2 : 3;
+  const paletteStepNum = inputMode === "cad_dxf" ? 3 : 4;
+  const instructionsStepNum = inputMode === "cad_dxf" ? 4 : 5;
+
+  const unlockRoomStep = step1Complete;
+  const unlockStyle = inputMode === "cad_dxf" ? step1Complete : step1Complete && roomTypeChosen;
+  const unlockPalette = unlockStyle && styleChosen;
+  const unlockInstructions = unlockPalette && paletteChosen;
 
   const instructionsDone = instructions.trim().length > 0;
 
-  const milestoneDone = [step1Complete, roomTypeChosen, styleChosen, paletteChosen, instructionsDone] as const;
+  const milestoneDone =
+    inputMode === "cad_dxf"
+      ? ([step1Complete, styleChosen, paletteChosen, instructionsDone] as const)
+      : ([step1Complete, roomTypeChosen, styleChosen, paletteChosen, instructionsDone] as const);
 
   const completedCount = milestoneDone.filter(Boolean).length;
-  const allStepsDone = completedCount === STEP_COUNT;
-  const currentStep = allStepsDone ? STEP_COUNT : completedCount + 1;
+  const allStepsDone = completedCount === stepCount;
+  const currentStep = allStepsDone ? stepCount : completedCount + 1;
 
-  const canSubmit =
-    step1Complete && roomTypeChosen && styleChosen && paletteChosen;
+  const canSubmit = step1Complete && roomStepComplete && styleChosen && paletteChosen;
+
+  const maxInstructionChars = useMemo(
+    () =>
+      inputMode === "cad_dxf"
+        ? maxCadInstructionCharsFromHome()
+        : maxPhotoInstructionChars({
+            roomType,
+            styleType,
+            palette,
+            photoCount: selectedAssets.length,
+          }),
+    [inputMode, roomType, styleType, palette, selectedAssets.length],
+  );
 
   const goToResult = (operationId: string) => {
     push({
@@ -177,6 +226,7 @@ export default function HomeScreen() {
         type: ["image/*"],
         multiple: true,
         copyToCacheDirectory: true,
+        ...(Platform.OS === "web" ? { base64: false as const } : {}),
       });
 
       if (result.canceled || !result.assets?.length) return;
@@ -235,6 +285,7 @@ export default function HomeScreen() {
         type: ["*/*"],
         multiple: false,
         copyToCacheDirectory: true,
+        ...(Platform.OS === "web" ? { base64: false as const } : {}),
       });
       if (!result.canceled && result.assets?.length) {
         const asset = result.assets[0];
@@ -264,7 +315,7 @@ export default function HomeScreen() {
     if (!canSubmit) {
       Alert.alert(
         "Complete all steps",
-        "Upload your DXF and total area, then choose room type, style, and color palette.",
+        "Upload your DXF and total area, then choose style and color palette.",
       );
       return;
     }
@@ -284,23 +335,20 @@ export default function HomeScreen() {
 
     try {
       const formData = new FormData();
-      if (Platform.OS === "web" && (selectedDxf as any).file) {
-        formData.append("dxf_file", (selectedDxf as any).file);
-      } else {
-        formData.append("dxf_file", {
-          uri: selectedDxf.uri,
-          name: selectedDxf.name ?? "floor-plan.dxf",
-          type: "application/octet-stream",
-        } as any);
-      }
+      await appendMultipartFile(
+        formData,
+        "dxf_file",
+        selectedDxf,
+        "floor-plan.dxf",
+        "application/octet-stream",
+      );
       formData.append("area_m2", String(area));
       formData.append("style", styleType);
       formData.append("palette", palette.replace(/_/g, " "));
-      formData.append("room_type", roomType);
 
       setProgressText("Processing floor plan (this may take 1–3 minutes)...");
 
-      const cadRes = await apiFetch("/api/cad/process", {
+      const cadRes = await apiFetch("/api/cad-jobs/process", {
         method: "POST",
         body: formData,
       });
@@ -320,13 +368,16 @@ export default function HomeScreen() {
       setLoading(false);
       setProgressText("");
 
+      await setCadJobGenerationPrefs(jobId, {
+        style: styleType,
+        palette,
+        instructions: instructions.trim(),
+      });
+
       push({
         pathname: "/room-picker/[jobId]",
         params: {
           jobId,
-          style: styleType,
-          palette,
-          instructions: instructions.trim(),
         },
       });
     } catch (error: any) {
@@ -337,24 +388,6 @@ export default function HomeScreen() {
       setLoading(false);
       setProgressText("");
     }
-  };
-
-  const buildUploadFormData = (asset: DocumentPicker.DocumentPickerAsset) => {
-    const formData = new FormData();
-    const webFile = (asset as any).file;
-
-    if (Platform.OS === "web" && webFile) {
-      formData.append("file", webFile);
-    } else {
-      formData.append("file", {
-        uri: asset.uri,
-        name: asset.name ?? `room-${Date.now()}.jpg`,
-        type: asset.mimeType || "image/jpeg",
-      } as any);
-    }
-
-    formData.append("source_type", "photo");
-    return formData;
   };
 
   const buildPrompt = () => {
@@ -403,9 +436,18 @@ export default function HomeScreen() {
 
       for (const asset of selectedAssets.slice(0, 4)) {
         if (mediaAssetIds.length >= 4) break;
-        const uploadRes = await apiFetch("/api/upload", {
+        const uploadBody = new FormData();
+        await appendMultipartFile(
+          uploadBody,
+          "file",
+          asset,
+          `room-${Date.now()}.jpg`,
+          "image/jpeg",
+        );
+        uploadBody.append("source_type", "photo");
+        const uploadRes = await apiFetch("/api/uploads", {
           method: "POST",
-          body: buildUploadFormData(asset),
+          body: uploadBody,
         });
 
         if (!uploadRes.ok) {
@@ -428,7 +470,7 @@ export default function HomeScreen() {
 
       setProgressText("Starting AI generation...");
 
-      const generateRes = await apiFetch("/api/generate", {
+      const generateRes = await apiFetch("/api/generations", {
         method: "POST",
         body: JSON.stringify({
           media_asset_ids: mediaAssetIds,
@@ -485,10 +527,10 @@ export default function HomeScreen() {
         <View
           style={styles.progressRow}
           accessibilityRole="progressbar"
-          accessibilityValue={{ min: 1, max: STEP_COUNT, now: currentStep }}
+          accessibilityValue={{ min: 1, max: stepCount, now: currentStep }}
           accessibilityLabel="Form steps"
         >
-          {Array.from({ length: STEP_COUNT }, (_, i) => i + 1).map((step) => {
+          {Array.from({ length: stepCount }, (_, i) => i + 1).map((step) => {
             const done = allStepsDone || step < currentStep;
             const isCurrent = !allStepsDone && step === currentStep;
             const isUpcoming = !allStepsDone && step > currentStep;
@@ -497,7 +539,7 @@ export default function HomeScreen() {
               <View
                 key={step}
                 accessible
-                accessibilityLabel={`Step ${step} of ${STEP_COUNT}${
+                accessibilityLabel={`Step ${step} of ${stepCount}${
                   done ? ", completed" : isCurrent ? ", current" : ", locked"
                 }`}
                 style={[
@@ -617,41 +659,43 @@ export default function HomeScreen() {
           )}
         </View>
 
-        <StepGate unlocked={unlockStep2}>
-          <View style={styles.section}>
-          <Text style={styles.stepLabel}>STEP 2</Text>
-          <Text style={styles.sectionTitle}>Select Room Type</Text>
-          <Text style={styles.sectionSubtitle}>Which space are we transforming today?</Text>
-          <View style={styles.roomGrid}>
-            {roomOptions.map((option) => {
-              const selected = roomTypeChosen && option.id === roomType;
-              return (
-                <Pressable
-                  key={option.id}
-                  style={[styles.roomBtn, selected && styles.roomBtnSelected]}
-                  onPress={() => {
-                    setRoomType(option.id);
-                    setRoomTypeChosen(true);
-                  }}
-                >
-                  <Feather
-                    name={option.icon}
-                    size={16}
-                    color={selected ? "#6b705c" : "#64748b"}
-                    style={styles.roomIcon}
-                  />
-                  <Text style={[styles.roomText, selected && styles.roomTextSelected]}>{option.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-        </StepGate>
+        {inputMode === "photo" ? (
+          <StepGate unlocked={unlockRoomStep}>
+            <View style={styles.section}>
+              <Text style={styles.stepLabel}>STEP 2</Text>
+              <Text style={styles.sectionTitle}>Select Room Type</Text>
+              <Text style={styles.sectionSubtitle}>Which space are we transforming today?</Text>
+              <View style={styles.roomGrid}>
+                {roomOptions.map((option) => {
+                  const selected = roomTypeChosen && option.id === roomType;
+                  return (
+                    <Pressable
+                      key={option.id}
+                      style={[styles.roomBtn, selected && styles.roomBtnSelected]}
+                      onPress={() => {
+                        setRoomType(option.id);
+                        setRoomTypeChosen(true);
+                      }}
+                    >
+                      <Feather
+                        name={option.icon}
+                        size={16}
+                        color={selected ? "#6b705c" : "#64748b"}
+                        style={styles.roomIcon}
+                      />
+                      <Text style={[styles.roomText, selected && styles.roomTextSelected]}>{option.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          </StepGate>
+        ) : null}
 
-        <StepGate unlocked={unlockStep3}>
+        <StepGate unlocked={unlockStyle}>
           <View style={styles.section}>
-          <Text style={styles.stepLabel}>STEP 3</Text>
-          <Text style={styles.sectionTitle}>Choose your Style</Text>
+            <Text style={styles.stepLabel}>STEP {styleStepNum}</Text>
+            <Text style={styles.sectionTitle}>Choose your Style</Text>
           {styleOptions.map((option) => {
             const selected = styleChosen && option.id === styleType;
             return (
@@ -680,10 +724,10 @@ export default function HomeScreen() {
           </View>
         </StepGate>
 
-        <StepGate unlocked={unlockStep4}>
+        <StepGate unlocked={unlockPalette}>
           <View style={styles.section}>
-          <Text style={styles.stepLabel}>STEP 4</Text>
-          <Text style={styles.sectionTitle}>Pick a Color Palette</Text>
+            <Text style={styles.stepLabel}>STEP {paletteStepNum}</Text>
+            <Text style={styles.sectionTitle}>Pick a Color Palette</Text>
           {paletteOptions.map((option) => {
             const selected = paletteChosen && option.id === palette;
             const colors =
@@ -721,22 +765,23 @@ export default function HomeScreen() {
           </View>
         </StepGate>
 
-        <StepGate unlocked={unlockStep5}>
+        <StepGate unlocked={unlockInstructions}>
           <View style={styles.section}>
-          <Text style={styles.stepLabel}>STEP 5</Text>
-          <Text style={styles.sectionTitle}>AI Custom Instructions</Text>
-          <Text style={styles.sectionSubtitle}>
-            Any specific details or features you want the AI to include?
-          </Text>
+            <Text style={styles.stepLabel}>STEP {instructionsStepNum}</Text>
+            <Text style={styles.sectionTitle}>AI Custom Instructions</Text>
           <TextInput
             style={styles.instructionsInput}
             placeholder="e.g., Make it look like a cozy library with many bookshelves..."
             placeholderTextColor="#94a3b8"
             multiline
+            maxLength={maxInstructionChars}
             value={instructions}
             onChangeText={setInstructions}
             textAlignVertical="top"
           />
+          <Text style={styles.instructionsCharCount}>
+            {instructions.length} / {maxInstructionChars}
+          </Text>
           </View>
         </StepGate>
       </ScrollView>
@@ -1044,6 +1089,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 14,
+  },
+  instructionsCharCount: {
+    alignSelf: "flex-end",
+    marginTop: 6,
+    fontSize: 12,
+    color: "#64748b",
+    fontWeight: "600",
   },
   areaInputRow: {
     flexDirection: "row",

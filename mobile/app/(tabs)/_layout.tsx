@@ -1,6 +1,5 @@
 import { Tabs } from "expo-router";
-// Using arbitrary standard icons from vector icons for tabs
-import { Feather } from '@expo/vector-icons';
+import { Feather } from "@expo/vector-icons";
 
 export default function TabLayout() {
   return (
@@ -17,12 +16,6 @@ export default function TabLayout() {
         options={{
           title: "Home",
           tabBarIcon: ({ color }) => <Feather name="home" size={24} color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="generate"
-        options={{
-          href: null,
         }}
       />
       <Tabs.Screen

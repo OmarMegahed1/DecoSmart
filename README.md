@@ -26,16 +26,13 @@ npm run web
 npm run build:backend
 ```
 
-Run a command only if:
+## Database (Neon)
 
-you’re on a different machine or new DATABASE_URL, or
-someone recreates the database from scratch.
-Then from backend/:
+If `room_results.preview_png_b64` is missing on a database (e.g. new environment), run from `backend/`:
 
 ```bash
 npm run db:ensure-room-preview
 ```
-Restart the backend if it was stopped; otherwise a restart isn’t required for this change.
 
 ## Full data flow
 
@@ -47,7 +44,7 @@ flowchart TD
     WorldLabs["WorldLabs API"]
     DB["Neon Postgres"]
 
-    Mobile -->|"POST /api/cad/process\n(DXF file + area_m2)"| Backend
+    Mobile -->|"POST /api/cad-jobs/process\n(DXF file + area_m2)"| Backend
     Backend -->|"POST /process\n(multipart DXF)"| Kaggle
     Kaggle -->|"ezdxf + EasyOCR + OpenCV\n+ Canny + Realistic Vision SD"| Kaggle
     Kaggle -->|"rooms JSON + base64 images"| Backend
@@ -56,7 +53,7 @@ flowchart TD
     Backend -->|"store cad_jobs + room_results"| DB
     Backend -->|"job_id + rooms list"| Mobile
     Mobile -->|"Room Picker screen"| Mobile
-    Mobile -->|"POST /api/generate\n(selected room media_asset_id)"| Backend
+    Mobile -->|"POST /api/generations\n(selected room media_asset_id)"| Backend
     Backend -->|"generate world"| WorldLabs
     WorldLabs -->|"operation_id"| Backend
     Mobile -->|"poll /api/operations/:id"| Backend

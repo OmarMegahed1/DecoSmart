@@ -83,6 +83,7 @@ export default function LoginScreen() {
                 source={require("../../assets/Logo Frame.svg")}
                 style={styles.logoImage}
                 contentFit="contain"
+                cachePolicy="memory"
               />
             </View>
           </View>

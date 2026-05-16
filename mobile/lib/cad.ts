@@ -2,7 +2,7 @@ import { apiFetch, readApiErrorMessage } from "./api";
 
 export type CadRoomFurniturePiece = { name: string; w: number; d: number; h: number };
 
-/** Room row returned from GET /api/cad/rooms/:jobId or POST /api/cad/process */
+/** Room row returned from GET /api/cad-jobs/:jobId/rooms or POST /api/cad-jobs/process */
 export type CadRoom = {
   id: string;
   db_id: string;
@@ -82,7 +82,7 @@ export function mergeRoomPreviewsFromLegacy(
 }
 
 export async function fetchCadJobRooms(jobId: string): Promise<CadJobRoomsPayload> {
-  const res = await apiFetch(`/api/cad/rooms/${encodeURIComponent(jobId)}`);
+  const res = await apiFetch(`/api/cad-jobs/${encodeURIComponent(jobId)}/rooms`);
   if (!res.ok) {
     throw new Error(await readApiErrorMessage(res, "Could not load rooms for this job."));
   }

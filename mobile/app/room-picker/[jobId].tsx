@@ -5,9 +5,11 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  BackHandler,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { FlashList } from "@shopify/flash-list";
@@ -18,6 +20,12 @@ import {
   mergeRoomPreviewsFromLegacy,
   normalizeCadRoom,
 } from "../../lib/cad";
+import { getCadJobGenerationPrefs, readCadJobGenerationPrefsFromDisk, type CadJobGenerationPrefs } from "../../lib/cadJobGenerationPrefs";
+
+function paramOne(value: string | string[] | undefined): string {
+  if (value == null) return "";
+  return Array.isArray(value) ? (value[0] ?? "") : value;
+}
 
 const ROOM_TYPE_LABELS: Record<string, string> = {
   kitchen: "Kitchen",
@@ -66,6 +74,8 @@ const RoomRow = memo(function RoomRow({ room, isLoading, selectionLocked, onPres
           style={styles.cardImage}
           contentFit="cover"
           recyclingKey={room.db_id}
+          cachePolicy="memory-disk"
+          transition={120}
         />
       ) : (
         <View style={[styles.cardImage, styles.cardImagePlaceholder]}>
@@ -133,22 +143,80 @@ const RoomRow = memo(function RoomRow({ room, isLoading, selectionLocked, onPres
 });
 
 export default function RoomPickerScreen() {
-  const { push, back } = useRouter();
+  const { push, back, canGoBack, replace } = useRouter();
   const params = useLocalSearchParams<{
     jobId: string;
     /** @deprecated Large payload; optional for deep links — previews merged when possible */
     rooms?: string;
-    style: string;
-    palette: string;
-    instructions: string;
+    /** Legacy URL params — prefer `cadJobGenerationPrefs` store */
+    style?: string;
+    palette?: string;
+    instructions?: string;
   }>();
 
-  const jobId = params.jobId ?? "";
-  const style = params.style ?? "modern";
-  const palette = (params.palette ?? "earth_tones").replace(/_/g, " ");
-  const instructions = params.instructions ?? "";
+  const jobId = paramOne(params.jobId);
 
-  const legacyRooms = useMemo(() => parseLegacyRoomsParam(params.rooms), [params.rooms]);
+  const fallbackPrefs = useMemo(
+    (): CadJobGenerationPrefs => ({
+      style: paramOne(params.style) || "modern",
+      palette: paramOne(params.palette) || "earth_tones",
+      instructions: paramOne(params.instructions) || "",
+    }),
+    [params.style, params.palette, params.instructions]
+  );
+
+  const syncResolved = useMemo(
+    () => (jobId ? getCadJobGenerationPrefs(jobId) : null) ?? fallbackPrefs,
+    [jobId, fallbackPrefs]
+  );
+
+  const [genPrefs, setGenPrefs] = useState<CadJobGenerationPrefs>(syncResolved);
+
+  useEffect(() => {
+    setGenPrefs(syncResolved);
+  }, [syncResolved]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!jobId) return;
+      const fromDisk = await readCadJobGenerationPrefsFromDisk(jobId);
+      if (!cancelled && fromDisk) {
+        setGenPrefs(fromDisk);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId]);
+
+  /** `back()` errors when this screen is the root (e.g. after auth `replace`, or no push history). */
+  const handleBack = useCallback(() => {
+    if (canGoBack()) {
+      back();
+    } else {
+      replace("/(tabs)");
+    }
+  }, [back, canGoBack, replace]);
+
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+        if (canGoBack()) {
+          return false;
+        }
+        replace("/(tabs)");
+        return true;
+      });
+      return () => sub.remove();
+    }, [canGoBack, replace])
+  );
+
+  const style = genPrefs.style;
+  const palette = genPrefs.palette.replace(/_/g, " ");
+  const instructions = genPrefs.instructions;
+
+  const legacyRooms = useMemo(() => parseLegacyRoomsParam(paramOne(params.rooms)), [params.rooms]);
 
   const [rooms, setRooms] = useState<CadRoom[]>([]);
   const [jobStatus, setJobStatus] = useState<string>("");
@@ -213,7 +281,7 @@ export default function RoomPickerScreen() {
 
       setLoadingRoomId(room.db_id);
       try {
-        const res = await apiFetch("/api/generate", {
+        const res = await apiFetch("/api/generations", {
           method: "POST",
           body: JSON.stringify({
             media_asset_ids: [room.media_asset_id],
@@ -282,7 +350,7 @@ export default function RoomPickerScreen() {
           {loadError ||
             "Open this screen from the home tab after processing a DXF, or go back and try again."}
         </Text>
-        <Pressable style={styles.backBtn} onPress={() => back()}>
+        <Pressable style={styles.backBtn} onPress={handleBack}>
           <Feather name="arrow-left" size={14} color="#fff" />
           <Text style={styles.backBtnText}>Go Back</Text>
         </Pressable>
@@ -305,7 +373,7 @@ export default function RoomPickerScreen() {
         <Feather name="alert-circle" size={40} color="#6b705c" />
         <Text style={styles.emptyTitle}>Processing failed</Text>
         <Text style={styles.emptySubtitle}>{jobErrorMessage}</Text>
-        <Pressable style={styles.backBtn} onPress={() => back()}>
+        <Pressable style={styles.backBtn} onPress={handleBack}>
           <Feather name="arrow-left" size={14} color="#fff" />
           <Text style={styles.backBtnText}>Go Back</Text>
         </Pressable>
@@ -322,7 +390,7 @@ export default function RoomPickerScreen() {
           This floor plan job has not finished yet. Pull to refresh from home or wait and open this
           screen again.
         </Text>
-        <Pressable style={styles.backBtn} onPress={() => back()}>
+        <Pressable style={styles.backBtn} onPress={handleBack}>
           <Feather name="arrow-left" size={14} color="#fff" />
           <Text style={styles.backBtnText}>Go Back</Text>
         </Pressable>
@@ -339,7 +407,7 @@ export default function RoomPickerScreen() {
           The AI could not identify any rooms in your DXF file.{"\n"}
           Try a different floor plan or check the file format.
         </Text>
-        <Pressable style={styles.backBtn} onPress={() => back()}>
+        <Pressable style={styles.backBtn} onPress={handleBack}>
           <Feather name="arrow-left" size={14} color="#fff" />
           <Text style={styles.backBtnText}>Go Back</Text>
         </Pressable>
@@ -350,7 +418,7 @@ export default function RoomPickerScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
-        <Pressable onPress={() => back()} style={styles.headerBack}>
+        <Pressable onPress={handleBack} style={styles.headerBack}>
           <Feather name="arrow-left" size={20} color="#0f172a" />
         </Pressable>
         <View style={styles.headerCenter}>

@@ -1,19 +1,39 @@
 import { betterAuth } from "better-auth";
 import { expo } from "@better-auth/expo";
-import { Pool } from "pg";
-import { config } from "../db/config";
-import { sendPasswordResetEmail } from "../utils/passwordResetEmail";
+import { pool } from "../db/client";
+import { env } from "../env";
+import { sendPasswordResetEmail } from "../integrations/resend/passwordResetEmail";
+import { sendAuthVerificationEmail } from "../integrations/resend/authVerificationEmail";
 
 // Better Auth manages its own tables (user, session, account, verification)
-// using its built-in pg adapter — no Drizzle schema mapping needed for auth tables.
-const pool = new Pool({ connectionString: config.database.url });
+// using its built-in pg adapter — same pool as Drizzle (`db/client.ts`).
 
 export const auth = betterAuth({
   database: pool,
 
-  baseURL: config.auth.url,
+  baseURL: env.auth.url,
   basePath: "/auth",
-  secret: config.auth.secret,
+  secret: env.auth.secret,
+
+  /** Map user fields to snake_case columns (see `backend/src/db/schema.ts` `user` table). */
+  user: {
+    fields: {
+      emailVerified: "email_verified",
+      createdAt: "created_at",
+      updatedAt: "updated_at",
+    },
+    changeEmail: {
+      enabled: true,
+    },
+  },
+
+  emailVerification: {
+    sendVerificationEmail: async ({ user, url }) => {
+      void sendAuthVerificationEmail(user.email, url).catch((err) => {
+        console.error("[sendVerificationEmail] failed:", err);
+      });
+    },
+  },
 
   /** When "remember me" is checked, sliding session up to 30 days; when unchecked, ~1 day (Better Auth default). */
   session: {
@@ -33,7 +53,7 @@ export const auth = betterAuth({
     },
   },
 
-  trustedOrigins: config.authTrustedOrigins,
+  trustedOrigins: env.authTrustedOrigins,
 
   plugins: [expo()],
 });

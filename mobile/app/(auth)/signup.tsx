@@ -80,6 +80,7 @@ export default function SignupScreen() {
                 style={styles.headerLogoImage}
                 contentFit="contain"
                 contentPosition="center"
+                cachePolicy="memory"
               />
             </View>
             <Text style={styles.brandText}>Deco-Smart</Text>
@@ -92,6 +93,7 @@ export default function SignupScreen() {
           style={styles.heroImage}
           contentFit="contain"
           contentPosition="center"
+          cachePolicy="memory"
         />
 
         <Text style={styles.title}>Create Account</Text>

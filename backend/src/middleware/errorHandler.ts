@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
-import { config } from "../db/config";
+import { env } from "../env";
+import { HttpError } from "../lib/httpError";
 
 export interface CustomError extends Error {
   status?: number;
@@ -10,11 +11,40 @@ export interface CustomError extends Error {
 }
 
 export const errorHandler = (
-  err: CustomError,
+  err: CustomError | HttpError,
   req: Request,
   res: Response,
   next: NextFunction
 ) => {
+  if (err instanceof HttpError) {
+    const status = err.status;
+    const message =
+      err.expose && err.message
+        ? err.message
+        : status === 404
+          ? "Not found"
+          : status >= 500
+            ? "Something went wrong."
+            : "Request could not be completed.";
+    if (status >= 500) {
+      console.error("[http]", status, err.message, err.cause ?? "");
+    } else if (env.isDev) {
+      console.warn("[http]", status, err.message);
+    }
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+    res.status(status).json({
+      error: message,
+      ...(env.isDev && {
+        details: err.message,
+        path: req.originalUrl,
+      }),
+    });
+    return;
+  }
+
   console.error(err.stack ?? err);
 
   let status = err.status ?? err.statusCode ?? 500;
@@ -45,9 +75,12 @@ export const errorHandler = (
     return;
   }
 
+  const clientMessage =
+    status >= 500 && !env.isDev ? "Something went wrong. Please try again." : message;
+
   res.status(status).json({
-    error: message,
-    ...(config.isDev && {
+    error: clientMessage,
+    ...(env.isDev && {
       stack: err.stack,
       details: err.message,
       path: req.originalUrl,

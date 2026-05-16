@@ -272,6 +272,7 @@ export default function GalleryScreen() {
               source={require("../../assets/Icon.svg")}
               style={styles.logoIcon}
               contentFit="contain"
+              cachePolicy="memory"
             />
             <Text style={styles.heading}>MY PROJECTS</Text>
           </View>

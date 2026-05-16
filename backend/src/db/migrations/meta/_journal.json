@@ -22,6 +22,13 @@
       "when": 1778323200000,
       "tag": "0002_room_preview_png",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778400000000,
+      "tag": "0003_snake_case_user_and_cad_status_enum",
+      "breakpoints": true
     }
   ]
 }

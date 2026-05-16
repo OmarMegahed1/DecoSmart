@@ -1,18 +1,15 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import morgan from "morgan";
 import rateLimit from "express-rate-limit";
-import { config } from "./db/config";
-import { errorHandler, notFound } from "./middleware/errorHandler";
+import { env, isTestEnv } from "./env";
+import { errorHandler } from "./middleware/errorHandler";
+import { createApiRouter } from "./routes/apiRouter";
 
-import authRouter from "./routes/auth";
-import uploadRouter from "./routes/upload";
-import generateRouter from "./routes/generate";
-import operationsRouter from "./routes/operations";
-import worldsRouter from "./routes/worlds";
-import projectsRouter from "./routes/projects";
-import cadRouter from "./routes/cad";
-import { resetMobileBridgeHandler } from "./routes/resetBridge";
+import authRouter from "./routes/authRoutes";
+import { resetMobileBridgeHandler } from "./controllers/resetBridgeController";
+import { verifyEmailMobileBridgeHandler } from "./controllers/verifyEmailBridgeController";
 
 export function createApp(): express.Express {
   const app = express();
@@ -20,7 +17,7 @@ export function createApp(): express.Express {
   app.use(helmet());
   app.use(
     cors({
-      origin: config.corsOrigins,
+      origin: env.corsOrigins,
       credentials: true,
       methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
@@ -35,35 +32,40 @@ export function createApp(): express.Express {
     message: { error: "Too many requests, please try again later." },
   });
 
-  const generateLimiter = rateLimit({
-    windowMs: 60 * 60 * 1000,
-    max: 10,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "Generation limit reached. Please wait before generating again." },
-  });
-
   app.use(globalLimiter);
 
   app.use(express.json({ limit: "25mb" }));
   app.use(express.urlencoded({ extended: true }));
+  app.use(
+    morgan("dev", {
+      skip: () => isTestEnv(),
+    })
+  );
 
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    res.status(200).json({
+      status: "OK",
+      timestamp: new Date().toISOString(),
+      service: "Decor AI API",
+    });
   });
 
   /** HTTPS landing page from password-reset email → forwards to native app (`MOBILE_APP_SCHEME`). */
   app.get("/reset-mobile-bridge", resetMobileBridgeHandler);
 
-  app.use("/auth", authRouter);
-  app.use("/api/upload", uploadRouter);
-  app.use("/api/generate", generateLimiter, generateRouter);
-  app.use("/api/operations", operationsRouter);
-  app.use("/api/worlds", worldsRouter);
-  app.use("/api/projects", projectsRouter);
-  app.use("/api/cad", cadRouter);
+  /** After `/auth/verify-email` — same pattern as reset bridge for mail-client compatibility. */
+  app.get("/verify-email-mobile-bridge", verifyEmailMobileBridgeHandler);
 
-  app.use(notFound);
+  app.use("/auth", authRouter);
+  app.use("/api", createApiRouter());
+
+  app.use((req, res) => {
+    res.status(404).json({
+      error: "Route not found",
+      path: req.originalUrl,
+    });
+  });
+
   app.use(errorHandler);
 
   return app;

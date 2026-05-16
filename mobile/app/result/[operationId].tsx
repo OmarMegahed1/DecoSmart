@@ -16,8 +16,13 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { apiFetch, formatApiErrorPayload } from "../../lib/api";
 import { API_URL } from "../../lib/auth-client";
+import {
+  defaultSplatQuality,
+  isSpzTooLargeForNative,
+  spzBufferToViewerUrl,
+  type SplatQuality,
+} from "../../lib/spzViewerAsset";
 import { Feather } from "@expo/vector-icons";
-import { Buffer } from "buffer";
 import SplatViewer from "../../components/viewer/SplatViewer";
 
 type OperationProgress = {
@@ -58,6 +63,8 @@ type Stage = "polling" | "done" | "error";
 
 const POLL_MS = 5000;
 
+const SPLAT_FS_HOST_ID = "result-splat-fs-host";
+
 const CREAM = "#F5EFE6";
 const TEXT_MAIN = "#3A2F2A";
 const TEXT_SECONDARY = "#6b705c";
@@ -74,13 +81,10 @@ export default function ResultScreen() {
   const [errorMsg, setErrorMsg] = useState("");
   const [world, setWorld] = useState<World | null>(null);
   const [effectiveWorldId, setEffectiveWorldId] = useState<string | null>(null);
-  const [selectedQuality, setSelectedQuality] = useState<"100k" | "500k" | "full_res">("full_res");
+  const [selectedQuality, setSelectedQuality] = useState<SplatQuality>(() => defaultSplatQuality());
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [resolvedViewerSpzUrl, setResolvedViewerSpzUrl] = useState<string | null>(null);
   const [viewerLoadError, setViewerLoadError] = useState<string | null>(null);
-  const [viewerDebugLogs, setViewerDebugLogs] = useState<string[]>([]);
-  const [spzFetchBytes, setSpzFetchBytes] = useState<number | null>(null);
-  const [spzProxyQuality, setSpzProxyQuality] = useState<string | null>(null);
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [projectName, setProjectName] = useState("");
   const [isSavingProject, setIsSavingProject] = useState(false);
@@ -104,56 +108,56 @@ export default function ResultScreen() {
     async function resolveViewerAsset() {
       setViewerLoadError(null);
       setResolvedViewerSpzUrl(null);
-      setSpzFetchBytes(null);
-      setSpzProxyQuality(null);
 
       // Prefetch through authenticated API and feed a local URL to Spark.
       // This avoids cookie/CORS issues when Spark performs internal fetches.
       if (proxiedSpzUrl) {
         try {
-          const order: Array<"full_res" | "500k" | "100k"> = ["full_res", "500k", "100k"];
+          const order: SplatQuality[] = ["full_res", "500k", "100k"];
           const candidates = [selectedQuality, ...order.filter((q) => q !== selectedQuality)];
 
-          let successRes: Response | null = null;
-          let usedQuality: string | null = null;
+          let rawBuffer: ArrayBuffer | null = null;
+          let usedQuality: SplatQuality | null = null;
           let lastStatus: number | null = null;
           let lastErrorDetails: string | null = null;
 
           for (const quality of candidates) {
-            setViewerDebugLogs((prev) => [...prev, `Fetching proxied SPZ (${quality})...`]);
             try {
               const attempt = await apiFetch(
                 `/api/worlds/${effectiveWorldId}/spz/${quality}?operationId=${encodeURIComponent(String(operationId || ""))}`
               );
-              if (attempt.ok) {
-                successRes = attempt;
-                usedQuality = quality;
-                break;
-              }
-              lastStatus = attempt.status;
-              try {
-                const errBody = await attempt.json();
-                const details = formatApiErrorPayload(errBody, `Proxy failed (${attempt.status})`);
-                lastErrorDetails = `(${attempt.status}) ${details}`;
-                setViewerDebugLogs((prev) => [...prev, `Proxy ${quality} failed: ${details}`]);
-              } catch {
+              if (!attempt.ok) {
+                lastStatus = attempt.status;
                 try {
-                  const details = await attempt.text();
+                  const errBody = await attempt.json();
+                  const details = formatApiErrorPayload(errBody, `Proxy failed (${attempt.status})`);
                   lastErrorDetails = `(${attempt.status}) ${details}`;
-                  setViewerDebugLogs((prev) => [...prev, `Proxy ${quality} failed: ${details || "no body"}`]);
                 } catch {
-                  lastErrorDetails = `(${attempt.status}) no error body`;
+                  try {
+                    const details = await attempt.text();
+                    lastErrorDetails = `(${attempt.status}) ${details}`;
+                  } catch {
+                    lastErrorDetails = `(${attempt.status}) no error body`;
+                  }
                 }
+                continue;
               }
-            } catch (attemptError: any) {
-              lastErrorDetails = attemptError?.message || "Failed to fetch";
-              setViewerDebugLogs((prev) => [...prev, `Proxy ${quality} network error: ${lastErrorDetails}`]);
+              const buf = await attempt.arrayBuffer();
+              if (isSpzTooLargeForNative(buf.byteLength)) {
+                lastErrorDetails = `SPZ too large on mobile (${Math.round(buf.byteLength / 1e6)} MB)`;
+                continue;
+              }
+              rawBuffer = buf;
+              usedQuality = quality;
+              break;
+            } catch (attemptError: unknown) {
+              lastErrorDetails =
+                attemptError instanceof Error ? attemptError.message : "Failed to fetch";
             }
           }
 
-          if (!successRes) {
+          if (!rawBuffer || !usedQuality) {
             if (spzUrl) {
-              setViewerDebugLogs((prev) => [...prev, "Proxy unavailable, falling back to direct SPZ URL."]);
               setResolvedViewerSpzUrl(spzUrl);
               return;
             }
@@ -162,53 +166,17 @@ export default function ResultScreen() {
             );
           }
 
-          const selectedProxyQuality = successRes.headers.get("x-spz-quality") || usedQuality;
-          if (selectedProxyQuality) {
-            setSpzProxyQuality(selectedProxyQuality);
-            setViewerDebugLogs((prev) => [...prev, `Proxy selected quality: ${selectedProxyQuality}`]);
-          }
+          if (cancelled) return;
 
-          const rawBuffer = await successRes.arrayBuffer();
-          const byteSize = rawBuffer.byteLength;
-          setSpzFetchBytes(byteSize);
-          if (!cancelled) {
-            setViewerDebugLogs((prev) => [...prev, `SPZ fetched: ${(byteSize / (1024 * 1024)).toFixed(2)} MB`]);
-
-            if (Platform.OS === "web") {
-              const blob = new Blob([rawBuffer], { type: "application/octet-stream" });
-              const dataUrl = await new Promise<string>((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                  if (typeof reader.result === "string") {
-                    resolve(reader.result);
-                    return;
-                  }
-                  reject(new Error("Failed to convert SPZ blob to data URL"));
-                };
-                reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
-                reader.readAsDataURL(blob);
-              });
-              setResolvedViewerSpzUrl(dataUrl);
-              setViewerDebugLogs((prev) => [...prev, "Web SPZ converted to data URL."]);
-            } else {
-              // Native WebView cannot rely on app cookies for internal module fetches.
-              // Provide a self-contained data URL so Spark loads from local bytes.
-              const bytes = new Uint8Array(rawBuffer);
-              const base64 = Buffer.from(bytes).toString("base64");
-              setResolvedViewerSpzUrl(`data:application/octet-stream;base64,${base64}`);
-              setViewerDebugLogs((prev) => [...prev, "Native SPZ converted to data URL."]);
-            }
-          }
+          const viewerUrl = await spzBufferToViewerUrl(
+            `${effectiveWorldId}-${String(operationId)}-${usedQuality}`,
+            rawBuffer
+          );
+          if (!cancelled) setResolvedViewerSpzUrl(viewerUrl);
           return;
-        } catch (e: any) {
+        } catch (e: unknown) {
           if (!cancelled) {
-            const message = e?.message || "Unable to prepare 3D asset for rendering";
-            setViewerDebugLogs((prev) => [...prev, `SPZ fetch error: ${message}`]);
-            if (selectedQuality !== "100k") {
-              setViewerDebugLogs((prev) => [...prev, `Auto-fallback: switching quality from ${selectedQuality} to 100k.`]);
-              setSelectedQuality("100k");
-              return;
-            }
+            const message = e instanceof Error ? e.message : "Unable to prepare 3D asset for rendering";
             setViewerLoadError(message);
           }
           return;
@@ -218,11 +186,9 @@ export default function ResultScreen() {
       // Final fallback: use direct URL.
       if (!spzUrl) {
         setViewerLoadError("No SPZ URL available from world response or proxy");
-        setViewerDebugLogs((prev) => [...prev, "No SPZ URL available from world response or proxy."]);
         return;
       }
 
-      setViewerDebugLogs((prev) => [...prev, "Proxy URL unavailable, using direct SPZ URL."]);
       setResolvedViewerSpzUrl(spzUrl);
     }
 
@@ -234,10 +200,30 @@ export default function ResultScreen() {
         URL.revokeObjectURL(objectUrlToRevoke);
       }
     };
-  }, [spzUrl, proxiedSpzUrl, selectedQuality, effectiveWorldId]);
+  }, [spzUrl, proxiedSpzUrl, selectedQuality, effectiveWorldId, operationId]);
 
-  const handleViewerLog = useCallback((msg: string) => {
-    setViewerDebugLogs((prev) => [...prev.slice(-14), `[viewer] ${msg}`]);
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const el =
+      document.getElementById(SPLAT_FS_HOST_ID) ||
+      document.querySelector(`[data-testid="${SPLAT_FS_HOST_ID}"]`);
+    if (!el) return;
+    if (isFullscreen) {
+      (el as HTMLElement).requestFullscreen?.().catch(() => {});
+    } else if (document.fullscreenElement === el) {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const onFs = () => {
+      if (!document.fullscreenElement) {
+        setIsFullscreen(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
   const goToMyProjects = useCallback(() => {
@@ -271,7 +257,6 @@ export default function ResultScreen() {
 
     setIsSavingProject(true);
     setSaveStatusText("Saving project...");
-    setViewerDebugLogs((prev) => [...prev, "Save Project tapped."]);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
@@ -302,7 +287,6 @@ export default function ResultScreen() {
 
       setIsSaveModalOpen(false);
       setSaveStatusText(null);
-      setViewerDebugLogs((prev) => [...prev, `Project saved: ${trimmedName}`]);
       goToMyProjects();
     } catch (e: any) {
       clearTimeout(timeout);
@@ -311,7 +295,6 @@ export default function ResultScreen() {
           ? "Save timed out. Please make sure backend is running and try again."
           : e?.message || "Unable to save project";
       setSaveStatusText(message);
-      setViewerDebugLogs((prev) => [...prev, `Save project error: ${message}`]);
       Alert.alert("Save failed", message);
     } finally {
       setIsSavingProject(false);
@@ -375,7 +358,6 @@ export default function ResultScreen() {
       const hasSpzInResolvedWorld = !!resolvedWorld?.assets?.splats?.spz_urls;
       if (normalizedWorldId && !hasSpzInResolvedWorld) {
         try {
-          setViewerDebugLogs((prev) => [...prev, `Hydrating world assets from /api/worlds/${normalizedWorldId}...`]);
           const hydratedRes = await apiFetch(`/api/worlds/${normalizedWorldId}`);
           if (hydratedRes.ok) {
             const hydratedWorld = (await hydratedRes.json()) as World;
@@ -384,20 +366,13 @@ export default function ResultScreen() {
               id: hydratedWorld.id ?? String(normalizedWorldId),
               world_id: hydratedWorld.world_id ?? resolvedWorld.world_id,
             };
-            setViewerDebugLogs((prev) => [...prev, "World assets hydrated."]);
-          } else {
-            setViewerDebugLogs((prev) => [...prev, `World hydrate failed (${hydratedRes.status}).`]);
           }
-        } catch (hydrateError: any) {
-          setViewerDebugLogs((prev) => [...prev, `World hydrate error: ${hydrateError?.message || "unknown"}`]);
+        } catch {
+          /* ignore hydrate failure; use partial world */
         }
       }
 
       setWorld(resolvedWorld);
-      setViewerDebugLogs((prev) => [
-        ...prev,
-        `World resolved. id=${(resolvedWorld as any)?.id ?? "n/a"} world_id=${(resolvedWorld as any)?.world_id ?? "n/a"}`,
-      ]);
       setStatusText("3D world is ready");
       setStage("done");
     } catch (error: any) {
@@ -430,7 +405,7 @@ export default function ResultScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar style={isFullscreen ? "light" : "dark"} />
+      <StatusBar style={isFullscreen ? "light" : "dark"} hidden={isFullscreen} />
       {!isFullscreen && (
         <View style={styles.header}>
           <Pressable onPress={() => router.replace("/(tabs)")} style={styles.backBtn}>
@@ -446,7 +421,6 @@ export default function ResultScreen() {
           <ActivityIndicator size="large" color="#c46b4a" />
           <Text style={styles.pollTitle}>Generating your 3D splat diffusion...</Text>
           <Text style={styles.pollSubtitle}>{statusText}</Text>
-          <Text style={styles.operationText}>Operation: {operationId}</Text>
         </View>
       )}
 
@@ -464,8 +438,18 @@ export default function ResultScreen() {
       {stage === "done" && world && (
         <View style={[styles.viewerContainer, isFullscreen && styles.viewerContainerFullscreen]}>
           {resolvedViewerSpzUrl ? (
-            <View style={[styles.embeddedViewerWrap, isFullscreen && styles.embeddedViewerWrapFullscreen]}>
-              <SplatViewer key={resolvedViewerSpzUrl || "viewer"} spzUrl={resolvedViewerSpzUrl} onLog={handleViewerLog} />
+            <View
+              nativeID={SPLAT_FS_HOST_ID}
+              testID={SPLAT_FS_HOST_ID}
+              style={[styles.embeddedViewerWrap, isFullscreen && styles.embeddedViewerWrapFullscreen]}
+            >
+              <SplatViewer
+                key={resolvedViewerSpzUrl || "viewer"}
+                spzUrl={resolvedViewerSpzUrl}
+                immersive={isFullscreen}
+                onToggleImmersive={() => setIsFullscreen((v) => !v)}
+                onError={(msg) => setViewerLoadError(msg)}
+              />
 
               <View style={styles.viewerOverlayControls}>
                 <View style={styles.viewerBadge}>
@@ -473,9 +457,6 @@ export default function ResultScreen() {
                     {selectedQuality === "full_res" ? "High Quality (Full)" : `Quality: ${selectedQuality}`}
                   </Text>
                 </View>
-                <Pressable style={styles.fullscreenBtn} onPress={() => setIsFullscreen((v) => !v)}>
-                  <Feather name={isFullscreen ? "minimize-2" : "maximize-2"} size={16} color={TEXT_MAIN} />
-                </Pressable>
               </View>
             </View>
           ) : viewerLoadError ? (
@@ -522,33 +503,10 @@ export default function ResultScreen() {
               })}
             </View>
 
-            <Text style={styles.spzUrl} numberOfLines={2}>
-              SPZ: {spzUrl || "Unavailable for selected quality"}
-            </Text>
-
-            <View style={styles.debugPanel}>
-              <Text style={styles.debugTitle}>Viewer Diagnostics</Text>
-              <Text style={styles.debugLine}>Quality: {selectedQuality}</Text>
-              <Text style={styles.debugLine}>Proxy selected quality: {spzProxyQuality ?? "n/a"}</Text>
-              <Text style={styles.debugLine}>World ID: {effectiveWorldId ?? "n/a"}</Text>
-              <Text style={styles.debugLine}>Proxy URL: {proxiedSpzUrl ? "ready" : "not-ready"}</Text>
-              <Text style={styles.debugLine}>SPZ fetched bytes: {spzFetchBytes ?? "n/a"}</Text>
-              <Text style={styles.debugLine}>Resolved source: {resolvedViewerSpzUrl ? "ready" : "not-ready"}</Text>
-              {viewerLoadError ? <Text style={styles.debugError}>Error: {viewerLoadError}</Text> : null}
-              {viewerDebugLogs.slice(-6).map((line, idx) => (
-                <Text key={`${line}-${idx}`} style={styles.debugLogLine}>{line}</Text>
-              ))}
-            </View>
-
             <View style={styles.actionsRow}>
               <Pressable style={styles.primaryActionBtn} onPress={openSaveProjectModal}>
                 <Text style={styles.primaryActionBtnText}>Save Project</Text>
               </Pressable>
-              {resolvedViewerSpzUrl ? (
-                <Pressable style={styles.secondaryBtn} onPress={() => setIsFullscreen(true)}>
-                  <Text style={styles.secondaryBtnText}>Fullscreen Preview</Text>
-                </Pressable>
-              ) : null}
               {!!world.id && (
                 <Pressable
                   style={styles.secondaryBtn}
@@ -640,11 +598,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: "center",
   },
-  operationText: {
-    marginTop: 8,
-    color: TEXT_MUTED,
-    fontSize: 12,
-  },
   errorTitle: {
     color: "#b91c1c",
     fontSize: 18,
@@ -695,8 +648,9 @@ const styles = StyleSheet.create({
     left: 12,
     right: 12,
     flexDirection: "row",
-    justifyContent: "space-between",
+    justifyContent: "flex-start",
     alignItems: "center",
+    pointerEvents: "box-none",
   },
   viewerBadge: {
     backgroundColor: "rgba(255,255,255,0.92)",
@@ -710,16 +664,6 @@ const styles = StyleSheet.create({
     color: TEXT_MAIN,
     fontSize: 11,
     fontWeight: "600",
-  },
-  fullscreenBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.92)",
-    borderColor: BORDER_SUBTLE,
-    borderWidth: 1,
   },
   webviewLoading: {
     flex: 1,
@@ -796,37 +740,6 @@ const styles = StyleSheet.create({
   },
   qualityTextSelected: {
     color: "#fff",
-  },
-  spzUrl: {
-    color: TEXT_MUTED,
-    fontSize: 12,
-  },
-  debugPanel: {
-    marginTop: 6,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: BORDER_SUBTLE,
-    backgroundColor: CREAM,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    gap: 4,
-  },
-  debugTitle: {
-    color: TEXT_MAIN,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  debugLine: {
-    color: TEXT_SECONDARY,
-    fontSize: 11,
-  },
-  debugError: {
-    color: "#b91c1c",
-    fontSize: 11,
-  },
-  debugLogLine: {
-    color: TEXT_MUTED,
-    fontSize: 10,
   },
   secondaryBtn: {
     alignSelf: "flex-start",
