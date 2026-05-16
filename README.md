@@ -935,64 +935,81 @@ erDiagram
 
 ## Backend architecture
 
+Simplified view of `backend/src/` using four logical layers. **Dependency rule:** **presentation** and **application** call **domain** shapes and **infrastructure** adapters; **domain** does not import **infrastructure** (mappers may depend on schema types and external DTO types declared as data).
+
+### Layer diagram
+
 ```mermaid
 flowchart TB
-  subgraph clients["Clients"]
-    Mobile["Expo mobile / web"]
+  subgraph presentation["Presentation — HTTP / Express"]
+    direction TB
+    P1["server.ts — compose app middleware + mounts"]
+    P2["index.ts — listen on PORT"]
+    P3["routes/*.ts — paths + requireAuth + multer + validate*"]
+    P4["controllers/*.ts — req or res + call services"]
+    P5["middleware/*.ts — auth.ts better-auth.ts validation.ts errorHandler.ts rateLimits.ts"]
+    P6["Bridge handlers in controllers — reset verify-email HTML redirects"]
   end
 
-  subgraph express["Express app — server.ts"]
-    MW["helmet, cors, rateLimit, json/urlencoded, morgan"]
-    Health["GET /health"]
-    Bridge["reset + verify-email bridges"]
-    Auth["/auth — Better Auth"]
-    API["/api — createApiRouter()"]
-    NotFound["404 JSON"]
-    Err["errorHandler"]
+  subgraph application["Application — use cases"]
+    direction TB
+    A1["services/** — orchestration transactions"]
+    A2["services/cadJobs generations operations uploads worlds projects spz"]
   end
 
-  subgraph api["apiRouter — routes/apiRouter.ts"]
-    U["/uploads"]
-    G["/generations"]
-    O["/operations"]
-    W["/worlds"]
-    P["/projects"]
-    C["/cad-jobs"]
+  subgraph domain["Domain — shapes contracts mapping"]
+    direction TB
+    D1["db/schema.ts — tables enums inferred types"]
+    D2["validation/*.ts — Zod request contracts"]
+    D3["mappers/*.ts — DB or pipeline to API DTO"]
+    D4["clients/worldlabs/types.ts — Marble API shapes"]
+    D5["lib/httpError.ts lib/sendControllerError.ts — shared errors + response helper"]
   end
 
-  subgraph layer["Typical request flow"]
-    Ctrl["controllers/*"]
-    Svc["services/*"]
-    Val["validation/* + middleware"]
+  subgraph infrastructure["Infrastructure — IO config"]
+    direction TB
+    I1["db/client.ts — pg pool"]
+    I2["db/migrations/** — Drizzle SQL"]
+    I3["db/seed.ts — optional seed"]
+    I4["clients/worldlabs/client.ts prompts.ts — HTTP to Marble"]
+    I5["clients/cadPipeline.ts — HTTP to CAD Flask"]
+    I6["integrations/resend/*.ts — outbound email"]
+    I7["env.ts — typed configuration"]
   end
 
-  subgraph external["External systems"]
-    PG[("PostgreSQL")]
-    WL["WorldLabs Marble API"]
-    CAD["CAD pipeline — Kaggle Flask /process"]
-  end
-
-  Mobile --> MW
-  MW --> Health
-  MW --> Bridge
-  MW --> Auth
-  MW --> API
-  API --> U & G & O & W & P & C
-  U & G & O & W & P & C --> Val
-  Val --> Ctrl --> Svc
-  Svc --> PG
-  Svc --> WL
-  Svc --> CAD
-  MW --> NotFound --> Err
+  presentation --> application
+  application --> domain
+  application --> infrastructure
+  presentation --> domain
+  presentation --> infrastructure
 ```
 
-**Layering (conceptual)**
+### Folder → layer (quick reference)
 
-- **Routes** — HTTP path, `requireAuth`, multer, Zod `validateBody` / `validateParams`.
-- **Controllers** — Parse `req`, call one service, map to HTTP status + JSON (or `sendControllerError`).
-- **Services** — Business logic: `processDxfJob`, `createWorldGeneration`, `getOperationWithGenerationSync`, etc.
-- **Clients** — `backend/src/clients/worldlabs/*`, `backend/src/clients/cadPipeline.ts` (thin HTTP adapters).
-- **DB** — Drizzle + `schema.ts`; migrations under `backend/src/db/migrations/`.
+| Layer | `backend/src/` folders / files | Role |
+|--------|-------------------------------|------|
+| **Presentation** | `routes/`, `controllers/`, `middleware/` (except **Better Auth wiring** note below), `server.ts`, `index.ts` | Routing, auth gate, validation **middleware**, HTTP errors to JSON, bridges. |
+| **Application** | `services/` | One service module per feature; coordinates DB + clients + mappers. |
+| **Domain** | `db/schema.ts`, `validation/`, `mappers/`, `lib/`, `clients/worldlabs/types.ts` | Data model, request schemas, response mapping, shared errors; **no** raw `fetch` / pool here. |
+| **Infrastructure** | `db/client.ts`, `db/migrations/`, `db/seed.ts`, `clients/` (**except** `types.ts` as pure types — still “contract” domain-adjacent), `integrations/`, `env.ts` | Persistence, outbound HTTP, email, environment. |
+
+**Note:** `middleware/better-auth.ts` **configures** Better Auth with `pool` and `env` — it sits on the border of **presentation** (session API) and **infrastructure** (DB + secrets). It is listed under **presentation** in the diagram for “where sessions attach to HTTP.”
+
+### Dependency sketch
+
+```mermaid
+flowchart LR
+  PRE[Presentation]
+  APP[Application]
+  DOM[Domain]
+  INF[Infrastructure]
+
+  PRE --> APP
+  APP --> DOM
+  APP --> INF
+  PRE --> DOM
+  PRE --> INF
+```
 
 ---
 
