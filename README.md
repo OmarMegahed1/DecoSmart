@@ -577,12 +577,13 @@ flowchart TB
 
   subgraph cad["CAD path"]
     C1 --> C2["POST /api/cad-jobs/process — dxf_file + area_m2, style, palette"]
-    C2 --> C3["Backend → Kaggle POST /process → rooms + renders"]
-    C3 --> C4["Backend uploads each render → Marble; DB cad_jobs + room_results"]
-    C4 --> C5["Response: job_id + rooms with preview + media_asset_id"]
-    C5 --> RP[Room picker: select a room]
-    RP --> C6["Optional: GET /api/cad-jobs/:jobId/rooms — reload list"]
-    C6 --> H
+    C2 --> C3["DB: insert cad_jobs pending stub — then Kaggle → rooms + renders"]
+    C3 --> C4["Upload each room PNG to Marble → media_asset_id per room"]
+    C4 --> C5["End: transaction INSERT room_results + UPDATE cad_jobs done totalRooms"]
+    C5 --> C6["Response: job_id + rooms with preview + media_asset_id"]
+    C6 --> RP[Room picker: select a room]
+    RP --> C7["Optional: GET /api/cad-jobs/:jobId/rooms — reload list"]
+    C7 --> H
   end
 
   subgraph generate["Start 3D world — same screen after CAD or photo"]
@@ -617,8 +618,6 @@ flowchart TB
 
 ### Sequence — CAD → room → world → SPZ (detail)
 
-Accurate to **`processCadDxfJob`**, **`createWorldGeneration`**, **`getOperationWithGenerationSync`**, and **`proxyWorldSpzAsset`**. The **poll** loop always calls Marble; **Postgres** is updated only when the operation is **finished successfully** or has an **error** (not on every poll).
-
 ```mermaid
 sequenceDiagram
   autonumber
@@ -630,42 +629,38 @@ sequenceDiagram
   participant DB as Postgres
 
   U->>App: Pick .dxf + options
-  App->>API: POST /api/cad-jobs/process — session cookie
-  API->>DB: insert cad_jobs — status pending
+  App->>API: POST /api/cad-jobs/process — cookie session
+  API->>DB: insert cad_jobs — pending stub
+  Note right of DB: userId status originalFileName areaMqInput
   API->>KG: multipart dxf_file + form fields
-  KG-->>API: rooms JSON + base64 images per room
-  loop Each detected room
-    API->>WL: media-assets prepare_upload + PUT PNG
-    WL-->>API: media_asset_id per room
+  KG-->>API: rooms JSON + base64 images
+  loop Each room render
+    API->>WL: prepare_upload + PUT PNG
+    WL-->>API: media_asset_id
   end
-  API->>DB: transaction — insert room_results + set cad_jobs done + total_rooms
-  API-->>App: job_id + rooms[] — 201
+  API->>DB: transaction — persist rooms and complete job
+  Note right of DB: INSERT room_results UPDATE cad_jobs status done totalRooms
+  API-->>App: job_id, rooms[]
 
-  U->>App: Select room
-  App->>API: POST /api/generations — cad_dxf + media_asset_ids + prompt
-  API->>WL: worlds generate
+  U->>App: Select room → Continue
+  App->>API: POST /api/generations — cad_dxf + media_asset_ids[0] + prompt
+  API->>WL: worlds:generate
   WL-->>API: operation_id
-  API->>DB: transaction — insert generations + uploaded_assets — pending
-  API-->>App: operation_id + generation_id — 201
+  API->>DB: insert generations, uploaded_assets
+  API-->>App: operation_id, generation_id
 
-  loop Client polls until done or error
+  loop Until done
     App->>API: GET /api/operations/:operationId
-    API->>DB: load generations row — ownership
     API->>WL: get operation
-    WL-->>API: Operation JSON — progress done error
-    opt Marble done and no error and DB not yet done
-      API->>DB: update generations — world_id spz_urls status done
-    end
-    opt Marble returned error and DB not yet error
-      API->>DB: update generations — status error errorMessage
-    end
-    API-->>App: Operation JSON
+    WL-->>API: progress / world payload
+    API->>DB: update generations — world_id, spz_urls when complete
+    API-->>App: Marble operation JSON
   end
 
   U->>App: Open 3D viewer
-  App->>API: GET /api/worlds/:worldId/spz/:quality — optional ?operationId=
-  API->>DB: resolveGenerationForWorld — spz_urls
-  API->>WL: fetch binary from signed SPZ URL — or getWorld if needed
+  App->>API: GET /api/worlds/:worldId/spz/full_res
+  API->>DB: resolve generation / spz_urls
+  API->>WL: fetch SPZ URL if needed
   API-->>App: SPZ bytes
 ```
 
@@ -1032,9 +1027,10 @@ flowchart LR
 
   subgraph backend["Backend"]
     B1["POST /api/cad-jobs/process"]
+    B1a["DB: cad_jobs pending stub"]
     B2["POST CAD_PIPELINE_URL/process"]
-    B3["Marble prepare_upload + PUT PNG"]
-    B4["DB: cad_jobs + room_results"]
+    B3["Marble prepare_upload + PUT PNG per room"]
+    B4["DB txn: INSERT room_results + cad_jobs done"]
     B5["POST /api/generations"]
     B6["Marble worlds:generate"]
     B7["GET /api/operations/:id sync"]
@@ -1048,9 +1044,9 @@ flowchart LR
     WL[(Marble)]
   end
 
-  M1 --> B1 --> B2 --> K
+  M1 --> B1 --> B1a --> B2 --> K
   K --> B2
-  B1 --> B3 --> WL
+  B2 --> B3 --> WL
   B3 --> B4
   M1 --> B5
   B5 --> B6 --> WL
